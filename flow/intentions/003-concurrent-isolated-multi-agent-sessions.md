@@ -85,5 +85,6 @@ Multiple AI agents (potentially running in different terminal sessions, differen
 
 ---
 
-> **Immutability Clause**
-> This document describes the INTENDED final state. All implementation MUST match this description verbatim. Any deviation requires a new intention document and explicit approval before merging.
+<immutable_block>
+This document describes the INTENDED final state. All implementation MUST match this description verbatim. Any deviation requires a new intention document and explicit approval before merging.
+</immutable_block>
