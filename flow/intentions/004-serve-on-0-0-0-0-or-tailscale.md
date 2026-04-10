@@ -1,15 +1,8 @@
-# INTENTION: Serve on 0.0.0.0 or Tailscale Network Address
+# INTENTION: 004 — Serve on 0.0.0.0 or Tailscale Network Address
 
 ## User Intent
 
-Plannotator currently binds to `localhost` (`127.0.0.1`) which prevents any machine other than the host from accessing the plan review UI. We want the server to be reachable:
-- On **all local interfaces** (`0.0.0.0`) for LAN access, or
-- On the **Tailscale network address** (e.g. `100.x.y.z`) so that any machine on the Tailscale tailnet can access it securely without exposing a port to the public internet.
-
-This is essential for:
-- Running Plannotator on a remote devcontainer/VM accessed via SSH.
-- Sharing a plan review session across machines on the same tailnet.
-- Headless environments where no local browser is available (Tailscale Funnel + Serve).
+be able to serve in 0.0.0.0 or in tailscale itself
 
 ## Current Behaviour
 
@@ -93,5 +86,5 @@ This is essential for:
 ---
 
 <immutable_block>
-This document describes the INTENDED final state. All implementation MUST match this description verbatim. Any deviation requires a new intention document and explicit approval before merging.
+be able to serve in 0.0.0.0 or in tailscale itself
 </immutable_block>

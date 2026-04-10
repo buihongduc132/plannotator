@@ -1,4 +1,4 @@
-# INTENTION: Consolidated Implementation Strategy — Multi-Session Plannotator
+# INTENTION: 000 — Consolidated Implementation Strategy — Multi-Session Plannotator
 
 ## Intent
 
@@ -81,14 +81,14 @@ export function removeSession(id: string): void {
 One `Bun.serve()` instance handles all sessions. The fetch handler routes by path prefix:
 
 ```
-/s/<sessionId>/api/plan        → GET  → return plan for that session
-/s/<sessionId>/api/approve     → POST → approve + self-cleanup
-/s/<sessionId>/api/deny        → POST → deny + self-cleanup
-/s/<sessionId>/api/image       → GET  → serve image (session-scoped path)
-/s/<sessionId>/api/upload      → POST → upload to /tmp/plannotator/<sessionId>/
-/api/sessions                 → GET  → list active sessions (for observability)
+/s/<sessionId>/api/plan            → GET  → return plan for that session
+/s/<sessionId>/api/approve         → POST → approve + self-cleanup
+/s/<sessionId>/api/deny            → POST → deny + self-cleanup
+/s/<sessionId>/api/image           → GET  → serve image (session-scoped path)
+/s/<sessionId>/api/upload          → POST → upload to /tmp/plannotator/<sessionId>/
+/api/sessions                     → GET  → list active sessions (for observability)
 DELETE /s/<sessionId>/api/session → delete session early
-/                              → SPA catch-all (serves HTML, no session needed for initial load)
+/                                → SPA catch-all (serves HTML, no session needed for initial load)
 ```
 
 ### Cleanup Strategy (Unified)
@@ -146,9 +146,3 @@ DELETE /s/<sessionId>/api/session → delete session early
 - Every new env var has a **sensible fallback** — no config required to retain current behaviour.
 - The registry is **synchronous** (Bun single-threaded) — no locking primitives needed.
 - Session state is **in-memory only** — no DB, no Redis, keeps deployment simple.
-
----
-
-<immutable_block>
-This document describes the INTENDED final state. All implementation MUST match this description verbatim. Any deviation requires a new intention document and explicit approval before merging.
-</immutable_block>

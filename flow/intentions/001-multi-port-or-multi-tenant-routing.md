@@ -1,8 +1,8 @@
-# INTENTION: Multi-Port / Multi-Project Session Routing
+# INTENTION: 001 — Multi-Port / Multi-Project Session Routing
 
 ## User Intent
 
-We want Plannotator to support multiple concurrent projects or sessions, each isolated — either by giving each project/session its own dedicated port, OR by reusing a single host:port but routing by a unique path prefix (e.g. `/s/<sessionId>/api/plan`) so that many plans can be in-flight simultaneously without port conflicts.
+having multiple (different port per project / session), OR reuse one host:port BUT having different /<endpoint> per project dir so that we can have multiple plans running
 
 ## Current Behaviour
 
@@ -60,5 +60,5 @@ We want Plannotator to support multiple concurrent projects or sessions, each is
 ---
 
 <immutable_block>
-This document describes the INTENDED final state. All implementation MUST match this description verbatim. Any deviation requires a new intention document and explicit approval before merging.
+having multiple (different port per project / session), OR reuse one host:port BUT having different /<endpoint> per project dir so that we can have multiple plans running
 </immutable_block>

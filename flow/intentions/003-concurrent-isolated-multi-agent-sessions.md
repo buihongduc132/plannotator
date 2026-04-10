@@ -1,8 +1,8 @@
-# INTENTION: Concurrent Isolated Multi-Agent Sessions
+# INTENTION: 003 — Concurrent Isolated Multi-Agent Sessions
 
 ## User Intent
 
-Multiple AI agents (potentially running in different terminal sessions, different OpenCode workspaces, or on different machines sharing the same Plannotator server via Tailscale) will call `submit_plan` concurrently. Each agent must only see and interact with its **own** plan and annotations. Agent A's plan must not leak into Agent B's view, and Agent B's approval/denial must not resolve Agent A's pending plan.
+be able to handle MULTIPLE session (multiple AI AGENT will use the submit_plan tools concurrencly) , they each should have only their scope ; not polute the others
 
 ## Current Behaviour
 
@@ -86,5 +86,5 @@ Multiple AI agents (potentially running in different terminal sessions, differen
 ---
 
 <immutable_block>
-This document describes the INTENDED final state. All implementation MUST match this description verbatim. Any deviation requires a new intention document and explicit approval before merging.
+be able to handle MULTIPLE session (multiple AI AGENT will use the submit_plan tools concurrencly) , they each should have only their scope ; not polute the others
 </immutable_block>

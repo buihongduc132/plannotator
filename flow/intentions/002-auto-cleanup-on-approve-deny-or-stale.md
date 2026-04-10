@@ -1,8 +1,8 @@
-# INTENTION: Auto-Cleanup on Approve, Deny, or Stale Timeout
+# INTENTION: 002 — Auto-Cleanup on Approve, Deny, or Stale
 
 ## User Intent
 
-After a plan is approved or denied, the server should shut down cleanly and immediately — releasing the port, clearing memory, and removing any temporary files. Similarly, if a submitted plan is never acted upon (the agent abandons it, the session dies, the user closes the tab), the server must not linger indefinitely; it should self-destruct after a configurable idle timeout.
+be able to clean up (after pressing approve) or after staling
 
 ## Current Behaviour
 
@@ -26,7 +26,7 @@ After a plan is approved or denied, the server should shut down cleanly and imme
 - `ServerOptions` gains two new optional fields:
   ```typescript
   cleanupAfterMs?: number;    // Absolute timeout from server start (default: none)
-  cleanupOnIdleMs?: number;  // Reset on any HTTP request; fire if no request received (default: none)
+  cleanupOnIdleMs?: number;    // Reset on any HTTP request; fire if no request received (default: none)
   ```
 - When either timeout fires, the session is torn down:
   - `server.stop()` is called.
@@ -69,5 +69,5 @@ After a plan is approved or denied, the server should shut down cleanly and imme
 ---
 
 <immutable_block>
-This document describes the INTENDED final state. All implementation MUST match this description verbatim. Any deviation requires a new intention document and explicit approval before merging.
+be able to clean up (after pressing approve) or after staling
 </immutable_block>
