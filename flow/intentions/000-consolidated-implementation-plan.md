@@ -35,6 +35,7 @@ export interface SessionContext {
   permissionMode?: string;
   sharingEnabled: boolean;
   slug: string;
+  draftKey: string;
   createdAt: number;
   lastActivityAt: number;
   resolveDecision: (result: DecisionResult) => void;
@@ -69,9 +70,16 @@ export function registerSession(ctx: SessionContext): void {
 
 export function removeSession(id: string): void {
   const ctx = registry.get(id);
-  if (ctx?.stopTimer) clearTimeout(ctx.stopTimer);
-  if (ctx?.stopIdleTimer) clearTimeout(ctx.stopIdleTimer);
-  // Cleanup temp dir: /tmp/plannotator/<id>/
+  if (!ctx) return;
+  if (ctx.stopTimer) clearTimeout(ctx.stopTimer);
+  if (ctx.stopIdleTimer) clearTimeout(ctx.stopIdleTimer);
+  // Cleanup session-scoped temp uploads: /tmp/plannotator/<id>/
+  try {
+    const { rmSync } = require("fs");
+    rmSync(`/tmp/plannotator/${id}`, { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup
+  }
   registry.delete(id);
 }
 ```
@@ -95,7 +103,7 @@ DELETE /s/<sessionId>/api/session → delete session early
 
 1. **In-handler cleanup** (primary): `/api/approve` and `/api/deny` call `removeSession(sessionId)` synchronously before returning the HTTP response. No plugin-side `stop()` call needed.
 2. **Idle timer** (secondary): If `cleanupOnIdleMs` is set, the timer is reset on every HTTP request. Fires if the user abandons the tab.
-3. **Absolute timer** (tertiark): If `cleanupAfterMs` is set, fires regardless of activity.
+3. **Absolute timer** (tertiary): If `cleanupAfterMs` is set, fires regardless of activity.
 4. **Temp dir**: All uploads go to `/tmp/plannotator/<sessionId>/`. Cleaned up by `removeSession()`.
 
 ### Backwards Compatibility Layer

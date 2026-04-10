@@ -19,6 +19,7 @@ having multiple (different port per project / session), OR reuse one host:port B
 - Each port runs its own isolated Bun server, fully separated.
 - The plugin layer (`apps/opencode-plugin/index.ts`) tracks `(sessionId → port)` in a registry so the result can be routed back.
 - Port cleanup happens after `approve`/`deny` or on timeout.
+- **Complexity note**: Managing multiple independent Bun.serve() processes requires careful coordination for port collision retry, per-process cleanup on timeout, and preventing port exhaustion. This is significantly more complex than Option B and is provided here as an architectural reference only.
 
 ### Option B — Multi-Tenant Single-Port (recommended)
 
@@ -38,11 +39,11 @@ having multiple (different port per project / session), OR reuse one host:port B
 - Works transparently behind any reverse proxy or Tailscale on a single address.
 - Allows a single observability/monitoring point.
 - Adding a new session is O(1) — no port exhaustion.
-- Shutting down all sessions cleanly is a single `server.stop()`.
+- Shutting down all sessions cleanly means calling `stop()` on each individual session's entry via `removeSession()`. The global `server.stop()` only stops the entire Bun.serve process and is NOT the normal per-session teardown path — it is reserved for full server shutdown.
 
 ## Required Changes
 
-1. **`packages/server/index.ts`** — Refactor out of closure-based state into a `SessionRegistry` map. Accept `sessionId` in `ServerOptions` or generate one. Route all `/api/*` paths under `/s/<sessionId>/api/*`.
+1. **`packages/server/index.ts`** — Refactor out of closure-based state into a `SessionRegistry` map. Accept `sessionId` in `ServerOptions` or generate one. Route all `/api/*` paths under `/s/<sessionId>/api/*` — this includes `/api/plan`, `/api/approve`, `/api/deny`, `/api/image`, `/api/upload`, `/api/obsidian/vaults`, and any future routes. Every route that reads or writes session state must check for the presence of a valid sessionId.
 
 2. **`packages/server/review.ts`** — Same refactoring as above for the review server.
 

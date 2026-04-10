@@ -38,10 +38,12 @@ be able to handle MULTIPLE session (multiple AI AGENT will use the submit_plan t
 
 ### URL Sharing Isolation
 
-- Shared URLs carry the full plan payload (they are self-contained); however, the server should:
-  - Validate that the `sessionId` embedded in any sharing URL (if any) matches the current server session, OR
-  - Ignore sessionId in sharing URLs entirely (treat them as read-only snapshots) — the safest option.
-- The recommended policy: **sharing URLs are stateless snapshots**. Opening a shared URL loads the plan + annotations but does NOT connect to any live session. Approval/denial from a shared URL should either be disabled or open a new isolated session.
+- Shared URLs carry the full plan payload (they are self-contained snapshots); however, the server should:
+  - **Ignore sessionId in sharing URLs entirely** — treat them as read-only stateless snapshots.
+  - The `sessionId` is NOT embedded in the sharing URL by design.
+- The policy is: **sharing URLs are stateless snapshots**. Opening a shared URL loads the plan + annotations but does NOT connect to any live session.
+- Approval/denial buttons on a shared URL are **disabled** — the user must open the URL in the originating session's context to approve/deny.
+- If a user pastes a shared URL while a local session is active, the local session content takes precedence and the shared URL content is discarded.
 
 ### Agent Scope Config
 
@@ -67,14 +69,20 @@ be able to handle MULTIPLE session (multiple AI AGENT will use the submit_plan t
    - Update `getPlanDir()`, `saveAnnotations()`, `saveFinalSnapshot()`, `savePlan()` to accept and use `sessionId`.
    - Add `sessionId` parameter to all exported functions.
 
-3. **`packages/ui/utils/sharing.ts`** / **`packages/ui/hooks/useSharing.ts`**:
+3. **`packages/server/draft.ts`**:
+   - Update `deleteDraft()` and all draft file path generation to scope by `sessionId`.
+   - Add `sessionId` parameter: `deleteDraft(draftKey: string, sessionId: string)`.
+   - Draft files path: `~/.plannotator/drafts/<sessionId>/<draftKey>.json`.
+
+4. **`packages/ui/utils/sharing.ts`** / **`packages/ui/hooks/useSharing.ts`**:
    - Treat shared URLs as read-only snapshots (no live session binding).
+   - Disable approve/deny buttons when viewing a shared URL.
    - Document this behaviour clearly in the UI.
 
-4. **`apps/opencode-plugin/index.ts`**:
+5. **`apps/opencode-plugin/index.ts`**:
    - Always pass `context.sessionID` as `sessionId` when calling `startPlannotatorServer()`.
 
-5. **`packages/server/remote.ts`** — Add `PLANNOTATOR_MAX_SESSIONS` env var handling.
+6. **`packages/server/remote.ts`** — Add `PLANNOTATOR_MAX_SESSIONS` env var handling.
 
 ## Non-Functional Requirements
 

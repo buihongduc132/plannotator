@@ -51,13 +51,17 @@ be able to clean up (after pressing approve) or after staling
    - Register cleanup timers on server start.
    - In `/api/approve` and `/api/deny` handlers: call `stopSession()` (internal) before resolving.
    - Use session-scoped temp dir: `/tmp/plannotator/<sessionId>/`.
-   - Add `DELETE /api/session` endpoint.
+   - Add `DELETE /s/<sessionId>/api/session` endpoint.
 
 2. **`packages/server/review.ts`** — Same changes as above.
 
-3. **`apps/opencode-plugin/index.ts`** — Remove `Bun.sleep(1500)` and `server.stop()` calls. The server cleans itself up.
+3. **`packages/server/draft.ts`** — Update `deleteDraft()` and draft file path generation to scope drafts by `sessionId` + `draftKey`. Draft files must not persist across sessions. Add `sessionId` parameter to `deleteDraft(draftKey, sessionId)`.
 
-4. **`packages/server/storage.ts`** — Update temp file path generation to include `sessionId`.
+4. **`packages/server/shared-handlers.ts`** — Update `handleUpload` and `handleImage` (if they exist as shared handlers) to scope temp file paths by `sessionId`.
+
+5. **`apps/opencode-plugin/index.ts`** — Remove `Bun.sleep(1500)` and `server.stop()` calls. The server cleans itself up.
+
+6. **`packages/server/storage.ts`** — Update temp file path generation to include `sessionId`.
 
 ## Non-Functional Requirements
 

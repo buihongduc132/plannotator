@@ -36,11 +36,15 @@ be able to serve in 0.0.0.0 or in tailscale itself
 ### Tailscale Support
 
 - New env var: `PLANNOTATOR_TAILSCALE=1` or `PLANNOTATOR_TAILSCALE=true`.
-- When set, detect the Tailscale IP at startup:
-  - Check `TS_TAILSCALE_ADDR` env var first (set by `tailscale serve` / `tailscale Funnel`).
-  - Fall back to parsing `tailscale status --json` output (cached at startup, not re-read on every request).
-  - Cache the Tailscale IP address in a module-level variable.
-- Construct the server URL using the Tailscale IP:
+- When set, detect the Tailscale IP at startup using the following priority:
+  1. `TS_LOCAL_ADDR` env var first (set by `tailscale serve` / `tailscale Funnel`).
+  2. Fall back to `tailscale status --json` output cached at startup (not re-read on every request).
+     - Locate the `tailscale` binary via `Bun.which("tailscale")` or fall back to `tailscale` in PATH.
+     - Run with a 5-second timeout via `Bun.spawn({ cmd: ["tailscale", "status", "--json"], timeout: 5000 })`.
+     - Parse the `Self.DNSName` or `Self.IPv4` field from the JSON output.
+     - Cache the result in a module-level variable.
+  3. If both fail, log a warning and fall back to `PLANNOTATOR_HOST` if set, otherwise bind to the configured hostname.
+- Construct the server URL using the resolved Tailscale IP:
   ```
   http://<tailscale-ip>:<port>
   ```
@@ -61,7 +65,7 @@ be able to serve in 0.0.0.0 or in tailscale itself
 
 1. **`packages/server/remote.ts`**:
    - Add `getServerHostname(): string` function.
-   - Add Tailscale IP detection (`PLANNOTATOR_TAILSCALE` env var, `TS_TAILSCALE_ADDR`, `tailscale status --json`).
+   - Add Tailscale IP detection (`PLANNOTATOR_TAILSCALE` env var, `TS_LOCAL_ADDR`, `tailscale status --json` with 5s timeout and `Bun.which` fallback).
    - Add `PLANNOTATOR_TAILSCALE_URL_BASE` env var for explicit Funnel URLs.
    - Re-export `getServerHostname` from `packages/server/index.ts`.
 
