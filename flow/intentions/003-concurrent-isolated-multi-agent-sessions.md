@@ -22,13 +22,21 @@ be able to handle MULTIPLE session (multiple AI AGENT will use the submit_plan t
 
 ### Scoped Storage
 
-- All storage functions in `packages/server/storage.ts` are updated to prefix paths/keys with the session ID:
+- Storage is organized in **two levels**: `cwd` (project root) as the outer namespace, `sessionId` as the inner isolation key.
+- This means multiple agents working in the same project (`cwd`) can have fully isolated concurrent sessions.
+- All storage functions in `packages/server/storage.ts` are updated to use a two-level path prefix:
   ```
   Before: <planSaveDir>/<slug>/
-  After:  <planSaveDir>/<sessionId>/<slug>/
+  After:  <planSaveDir>/<cwd>/<sessionId>/<slug>/
   ```
-- Temp upload directory is session-scoped (see INTENTION-002).
-- The slug itself (derived from plan content) is unchanged — two agents with identical plan content still get separate directories.
+  - `<cwd>` — the project working directory, e.g. `/home/user/projects/myapp`. Sanitized to be filesystem-safe (replace `/` with `_`, remove `.`, etc.).
+  - `<sessionId>` — the UUID v4 session identifier.
+  - `<slug>` — derived from plan content (unchanged).
+- Temp upload directory is session-scoped: `/tmp/plannotator/<cwd>/<sessionId>/` (see INTENTION-002).
+- Draft files path: `~/.plannotator/drafts/<cwd>/<sessionId>/<draftKey>.json`.
+- Two agents on the same machine with the same `cwd` but different `sessionId` → separate directories.
+- Two agents with different `cwd` → completely separate storage trees (no cross-pollution).
+- The slug itself (derived from plan content) is unchanged — two agents with identical plan content but different sessionIds still get separate directories.
 
 ### Isolated Decision Resolution
 
@@ -60,19 +68,21 @@ be able to handle MULTIPLE session (multiple AI AGENT will use the submit_plan t
 
 1. **`packages/server/index.ts`**:
    - Add `sessionId: string` to `ServerOptions` (optional, auto-generated if absent).
+   - Add `cwd: string` to `ServerOptions` — the project root working directory.
    - Add `scope?: string` to `ServerOptions` (optional project name).
    - Register session in global registry on start.
    - Check concurrency limit before starting.
    - Reject new session if at limit.
 
 2. **`packages/server/storage.ts`**:
-   - Update `getPlanDir()`, `saveAnnotations()`, `saveFinalSnapshot()`, `savePlan()` to accept and use `sessionId`.
-   - Add `sessionId` parameter to all exported functions.
+   - Update `getPlanDir()`, `saveAnnotations()`, `saveFinalSnapshot()`, `savePlan()` to accept and use both `cwd` and `sessionId`.
+   - Storage path format: `<planSaveDir>/<cwd_sanitized>/<sessionId>/<slug>/`.
+   - Sanitize `cwd`: replace `/` with `_`, remove leading/trailing `/`, strip `.` and non-safe chars.
 
 3. **`packages/server/draft.ts`**:
-   - Update `deleteDraft()` and all draft file path generation to scope by `sessionId`.
-   - Add `sessionId` parameter: `deleteDraft(draftKey: string, sessionId: string)`.
-   - Draft files path: `~/.plannotator/drafts/<sessionId>/<draftKey>.json`.
+   - Update `deleteDraft()` and all draft file path generation to scope by `cwd` + `sessionId`.
+   - Add `cwd` and `sessionId` parameters: `deleteDraft(draftKey: string, cwd: string, sessionId: string)`.
+   - Draft files path: `~/.plannotator/drafts/<cwd_sanitized>/<sessionId>/<draftKey>.json`.
 
 4. **`packages/ui/utils/sharing.ts`** / **`packages/ui/hooks/useSharing.ts`**:
    - Treat shared URLs as read-only snapshots (no live session binding).

@@ -50,7 +50,7 @@ be able to clean up (after pressing approve) or after staling
    - Add `cleanupAfterMs`, `cleanupOnIdleMs` to `ServerOptions`.
    - Register cleanup timers on server start.
    - In `/api/approve` and `/api/deny` handlers: call `stopSession()` (internal) before resolving.
-   - Use session-scoped temp dir: `/tmp/plannotator/<sessionId>/`.
+   - Use session-scoped temp dir: `/tmp/plannotator/<cwd_sanitized>/<sessionId>/`.
    - Add `DELETE /s/<sessionId>/api/session` endpoint.
 
 2. **`packages/server/review.ts`** — Same changes as above.

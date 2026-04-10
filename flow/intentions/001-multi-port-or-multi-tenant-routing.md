@@ -43,7 +43,7 @@ having multiple (different port per project / session), OR reuse one host:port B
 
 ## Required Changes
 
-1. **`packages/server/index.ts`** — Refactor out of closure-based state into a `SessionRegistry` map. Accept `sessionId` in `ServerOptions` or generate one. Route all `/api/*` paths under `/s/<sessionId>/api/*` — this includes `/api/plan`, `/api/approve`, `/api/deny`, `/api/image`, `/api/upload`, `/api/obsidian/vaults`, and any future routes. Every route that reads or writes session state must check for the presence of a valid sessionId.
+1. **`packages/server/index.ts`** — Refactor out of closure-based state into a `SessionRegistry` map. Accept `sessionId` and `cwd` in `ServerOptions`. Route all `/api/*` paths under `/s/<sessionId>/api/*` — this includes `/api/plan`, `/api/approve`, `/api/deny`, `/api/image`, `/api/upload`, `/api/obsidian/vaults`, and any future routes. Every route that reads or writes session state must check for the presence of a valid sessionId. The `cwd` is stored in `SessionContext` for use in storage path construction.
 
 2. **`packages/server/review.ts`** — Same refactoring as above for the review server.
 

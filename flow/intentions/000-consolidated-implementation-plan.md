@@ -28,6 +28,7 @@ The central data structure for all four intentions is a **module-level session r
 
 export interface SessionContext {
   sessionId: string;
+  cwd: string;              // project root working directory (sanitized for filesystem use)
   scope?: string;
   plan: string;
   origin: string;
@@ -73,10 +74,11 @@ export function removeSession(id: string): void {
   if (!ctx) return;
   if (ctx.stopTimer) clearTimeout(ctx.stopTimer);
   if (ctx.stopIdleTimer) clearTimeout(ctx.stopIdleTimer);
-  // Cleanup session-scoped temp uploads: /tmp/plannotator/<id>/
+  // Cleanup session-scoped temp uploads: /tmp/plannotator/<cwd_sanitized>/<sessionId>/
   try {
     const { rmSync } = require("fs");
-    rmSync(`/tmp/plannotator/${id}`, { recursive: true, force: true });
+    const cwdSanitized = ctx.cwd.replace(/\//g, "_").replace(/^_|_$/g, "");
+    rmSync(`/tmp/plannotator/${cwdSanitized}/${id}`, { recursive: true, force: true });
   } catch {
     // best-effort cleanup
   }
@@ -86,15 +88,16 @@ export function removeSession(id: string): void {
 
 ### Single Server, Multi-Session Routing
 
-One `Bun.serve()` instance handles all sessions. The fetch handler routes by path prefix:
+One `Bun.serve()` instance handles all sessions. The fetch handler routes by path prefix. The registry key is `sessionId` (globally unique). The `cwd` is used for storage path construction and is stored inside each `SessionContext`.
 
 ```
-/s/<sessionId>/api/plan            → GET  → return plan for that session
-/s/<sessionId>/api/approve         → POST → approve + self-cleanup
+/s/<sessionId>/api/plan            → GET  → look up session by sessionId from registry
+/s/<sessionId>/api/approve         → POST → approve + self-cleanup (removeSession)
 /s/<sessionId>/api/deny            → POST → deny + self-cleanup
-/s/<sessionId>/api/image           → GET  → serve image (session-scoped path)
-/s/<sessionId>/api/upload          → POST → upload to /tmp/plannotator/<sessionId>/
+/s/<sessionId>/api/image           → GET  → serve image (cwd/sessionId-scoped path)
+/s/<sessionId>/api/upload          → POST → upload to /tmp/plannotator/<cwd>/<sessionId>/
 /api/sessions                     → GET  → list active sessions (for observability)
+/api/sessions?cwd=<cwd>           → GET  → list sessions filtered by cwd
 DELETE /s/<sessionId>/api/session → delete session early
 /                                → SPA catch-all (serves HTML, no session needed for initial load)
 ```
@@ -104,7 +107,7 @@ DELETE /s/<sessionId>/api/session → delete session early
 1. **In-handler cleanup** (primary): `/api/approve` and `/api/deny` call `removeSession(sessionId)` synchronously before returning the HTTP response. No plugin-side `stop()` call needed.
 2. **Idle timer** (secondary): If `cleanupOnIdleMs` is set, the timer is reset on every HTTP request. Fires if the user abandons the tab.
 3. **Absolute timer** (tertiary): If `cleanupAfterMs` is set, fires regardless of activity.
-4. **Temp dir**: All uploads go to `/tmp/plannotator/<sessionId>/`. Cleaned up by `removeSession()`.
+4. **Temp dir**: All uploads go to `/tmp/plannotator/<cwd_sanitized>/<sessionId>/`. Cleaned up by `removeSession()`.
 
 ### Backwards Compatibility Layer
 
