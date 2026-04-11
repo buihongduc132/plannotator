@@ -22,6 +22,9 @@ export interface UseLinkedDocOptions {
   setGlobalAttachments: (att: ImageAttachment[]) => void;
   viewerRef: React.RefObject<ViewerHandle | null>;
   sidebar: { open: (tab?: SidebarTab) => void };
+  /** Absolute path of the primary document — enables getDocAnnotations() to include
+   *  stashed original-file annotations when viewing a linked doc. */
+  sourceFilePath?: string;
 }
 
 interface SavedPlanState {
@@ -53,7 +56,7 @@ export interface UseLinkedDocReturn {
   dismissError: () => void;
   /** All linked doc annotations including the active doc's live state (keyed by filepath) */
   getDocAnnotations: () => Map<string, CachedDocState>;
-  /** Reactive count of cached linked doc annotations (updates on back()) */
+  /** Reactive count of annotations on non-active documents (updates on open() and back()) */
   docAnnotationCount: number;
 }
 
@@ -71,6 +74,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
     setGlobalAttachments,
     viewerRef,
     sidebar,
+    sourceFilePath,
   } = options;
 
   const [linkedDoc, setLinkedDoc] = useState<{ filepath: string } | null>(null);
@@ -109,6 +113,18 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
           return;
         }
 
+        // Backlink detection: if a linked doc links back to the source file (e.g.,
+        // original.md → design.md → link back to original.md), opening it as a linked
+        // doc would create two competing Map entries for the same filepath in
+        // getDocAnnotations(), and the empty linked-doc entry would overwrite the
+        // stashed annotations. Instead, treat the backlink as a back() navigation —
+        // the current linked doc gets cached and the source file restores with its
+        // annotations intact.
+        if (sourceFilePath && data.filepath === sourceFilePath && savedPlanState.current) {
+          back();
+          return;
+        }
+
         // Clear web-highlighter marks before swapping content to prevent React DOM mismatch
         viewerRef.current?.clearAllHighlights();
 
@@ -120,12 +136,27 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
             selectedAnnotationId,
             globalAttachments: [...globalAttachments],
           };
+          let total = annotations.length + globalAttachments.length;
+          for (const [fp, cached] of docCache.current.entries()) {
+            if (fp === data.filepath!) continue; // destination becomes active — don't double-count
+            total += cached.annotations.length + cached.globalAttachments.length;
+          }
+          setDocAnnotationCount(total);
         } else if (linkedDoc) {
           // Already viewing a linked doc — cache its annotations before moving on
           docCache.current.set(linkedDoc.filepath, {
             annotations: [...annotations],
             globalAttachments: [...globalAttachments],
           });
+          let total = 0;
+          for (const [fp, cached] of docCache.current.entries()) {
+            if (fp === data.filepath!) continue; // destination becomes active — don't double-count
+            total += cached.annotations.length + cached.globalAttachments.length;
+          }
+          if (savedPlanState.current) {
+            total += savedPlanState.current.annotations.length + savedPlanState.current.globalAttachments.length;
+          }
+          setDocAnnotationCount(total);
         }
 
         // Check cache for previous annotations on this file
@@ -219,6 +250,13 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
 
   const getDocAnnotations = useCallback((): Map<string, CachedDocState> => {
     const result = new Map(docCache.current);
+    // Include stashed original-file annotations when viewing a linked doc
+    if (linkedDoc && savedPlanState.current && sourceFilePath) {
+      result.set(sourceFilePath, {
+        annotations: [...savedPlanState.current.annotations],
+        globalAttachments: [...savedPlanState.current.globalAttachments],
+      });
+    }
     if (linkedDoc) {
       result.set(linkedDoc.filepath, {
         annotations: [...annotations],
@@ -226,7 +264,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
       });
     }
     return result;
-  }, [linkedDoc, annotations, globalAttachments]);
+  }, [linkedDoc, annotations, globalAttachments, sourceFilePath]);
 
   return {
     isActive: linkedDoc !== null,
