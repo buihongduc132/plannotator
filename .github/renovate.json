@@ -6,6 +6,8 @@
   ],
   "enabledManagers": ["github-actions"],
   "schedule": ["before 5am on monday"],
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
   "packageRules": [
     {
       "matchManagers": ["github-actions"],
