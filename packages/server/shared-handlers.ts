@@ -11,6 +11,7 @@ import { openBrowser } from "./browser";
 import { validateImagePath, validateUploadExtension, UPLOAD_DIR } from "./image";
 import { saveDraft, loadDraft, deleteDraft } from "./draft";
 import { FAVICON_SVG } from "@plannotator/shared/favicon";
+import type { SessionScope } from "./storage";
 
 /** Serve images from local paths or temp uploads. Used by all 3 servers. */
 export async function handleImage(req: Request): Promise<Response> {
@@ -99,10 +100,10 @@ export async function handleAgents(opencodeClient?: OpencodeClient): Promise<Res
 }
 
 /** Save annotation draft. Used by all 3 servers. */
-export async function handleDraftSave(req: Request, contentKey: string): Promise<Response> {
+export async function handleDraftSave(req: Request, contentKey: string, scope?: SessionScope): Promise<Response> {
   try {
     const body = await req.json();
-    saveDraft(contentKey, body);
+    saveDraft(contentKey, body, scope);
     return Response.json({ ok: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to save draft";
@@ -112,8 +113,8 @@ export async function handleDraftSave(req: Request, contentKey: string): Promise
 }
 
 /** Load annotation draft. Used by all 3 servers. */
-export function handleDraftLoad(contentKey: string): Response {
-  const draft = loadDraft(contentKey);
+export function handleDraftLoad(contentKey: string, scope?: SessionScope): Response {
+  const draft = loadDraft(contentKey, scope);
   if (!draft) {
     return Response.json({ found: false }, { status: 404 });
   }
@@ -121,8 +122,8 @@ export function handleDraftLoad(contentKey: string): Response {
 }
 
 /** Delete annotation draft. Used by all 3 servers. */
-export function handleDraftDelete(contentKey: string): Response {
-  deleteDraft(contentKey);
+export function handleDraftDelete(contentKey: string, scope?: SessionScope): Response {
+  deleteDraft(contentKey, scope);
   return Response.json({ ok: true });
 }
 

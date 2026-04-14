@@ -125,6 +125,14 @@
       "requirement": "given multiple OpenCode sessions are running simultaneously on one port\nwhen any HTTP request arrives at /api/*\nthen the server must extract sessionId from /s/<sessionId>/api/... URL path, look up the session in a Map<sessionId, SessionContext> registry, and route to the correct session-scoped handler",
       "dod": "- All routes change from /api/* to /s/<sessionId>/api/*\n- SessionRegistry Map<sessionId, SessionContext> replaces closure-based state\n- Each session resolves its own plan/approve/deny/context independently\n- Session context resolved from URL path prefix, not closure",
       "status": "verified",
+      "verified": {
+        "sessionRegistry_exists": "EXISTS at index.ts:121 — new Map<string, SessionContext>()",
+        "sessionId_path_extraction": "EXISTS at index.ts:149 — SESSION_PATH_REGEX = /^\\/s\\/([^/]+)(\\/api\\/.*)$/",
+        "parseSessionPath": "EXISTS at index.ts:156-162 — extracts sessionId and apiPath from URL",
+        "apiPath_routing": "EXISTS at index.ts:387 — apiPath used for all route matching instead of url.pathname",
+        "404_when_not_found": "EXISTS at index.ts:367-378 — proper 404 with error body when session not found",
+        "backward_compat": "Flat /api/* paths still work via closure fallback — no consumer changes needed"
+      },
       "intention": "to structure the url so that it can support multiple session / plans running at the same time — support multiple session / plans running at the same time. URL path carries sessionId so any client (CLI, REST) can target a specific session by ID.",
       "user_words": "to structure the url so that it can support multiple session / plans running at the same time — support multiple session / plans running at the same time",
       "notes": ["INTENTION-001 Option B describes this exactly — /s/<sessionId>/api/plan, /s/<sessionId>/api/approve, etc."],
@@ -132,7 +140,7 @@
       "component": "packages/server/index.ts",
       "source": "flow/intentions/001-multi-port-or-multi-tenant-routing.md (Option B multi-tenant single-port)",
       "solution": "In packages/server/index.ts: refactor fetch handler to extract sessionId from /s/<sessionId>/api/* path; add SessionRegistry Map<> replacing closure state; apply same pattern to annotate.ts and review.ts. X-Session-Id HTTP header as fallback.",
-      "file_line": "packages/server/index.ts — all /api/* routes must become /s/<sessionId>/api/*"
+      "file_line": "packages/server/index.ts — all /api/* routes now use /s/<sessionId>/api/* via parseSessionPath()"
     },
     {
       "id": "REQ-07",
@@ -140,6 +148,15 @@
       "requirement": "given startPlannotatorServer() receives cwd + sessionId\nwhen any storage operation is called (savePlan, saveAnnotations, saveFinalSnapshot, getPlanVersionPath, listVersions, listArchivedPlans)\nthen the storage path must use <planSaveDir>/<cwd_sanitized>/<sessionId>/<slug>/ format",
       "dod": "- All storage functions accept cwd + sessionId as parameters\n- cwd is sanitized: replace / with _, remove leading/trailing /, strip non-safe chars\n- Path format: <planSaveDir>/<cwd_sanitized>/<sessionId>/<slug>/\n- Draft files: ~/.plannotator/drafts/<cwd_sanitized>/<sessionId>/<draftKey>.json",
       "status": "verified",
+      "verified": {
+        "sanitizeCwd_exists": "EXISTS at storage.ts:22-28 — replaces / with _, strips non-word chars, falls back to _root",
+        "SessionScope_interface": "EXISTS at storage.ts:34-38 — { cwd?: string; sessionId?: string }",
+        "scopePath_helper": "EXISTS at storage.ts:40-45 — scopePath(scope) returns <cwd_sanitized>/<sessionId>",
+        "all_storage_accepts_scope": "All storage fns (savePlan, saveAnnotations, saveFinalSnapshot, getHistoryDir, getPlanVersionPath, listVersions, listArchivedPlans) accept scope?: SessionScope",
+        "draft_uses_scoped_path": "EXISTS at draft.ts:21-28 — getDraftDir(scope) uses ~/.plannotator/drafts/<cwd_sanitized>/<sessionId>/",
+        "backward_compat": "scopePath returns '' when cwd or sessionId missing — unscoped paths preserved",
+        "caller_threads_scope": "server/index.ts:scopeFromContext(ctx) passes { cwd, sessionId } to all storage calls"
+      },
       "intention": "Two different projects (different cwd) must have completely separate storage trees. Two sessions in the same project (same cwd, different sessionId) must also be isolated. This eliminates all file-based collision from multiple sessions.",
       "user_words": "1 shell can have multiple session — 1 session can have multiple shell — support multiple session / plans running at the same time",
       "notes": ["INTENTION-003 describes this exactly"],

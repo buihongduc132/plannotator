@@ -54,6 +54,10 @@ export interface AnnotateServerOptions {
   gate?: boolean;
   /** Called when server starts with the URL, remote status, and port */
   onReady?: (url: string, isRemote: boolean, port: number) => void;
+  /** OpenCode session ID for storage isolation */
+  sessionId?: string;
+  /** Working directory as outer namespace */
+  cwd?: string;
 }
 
 export interface AnnotateServerResult {

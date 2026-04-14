@@ -39,6 +39,7 @@ import {
   listArchivedPlans,
   readArchivedPlan,
   type ArchivedPlan,
+  type SessionScope,
 } from "./storage";
 import { getRepoInfo } from "./repo";
 import { detectProjectName } from "./project";
@@ -57,6 +58,111 @@ export * from "./integrations";
 export * from "./storage";
 export { handleServerReady } from "./shared-handlers";
 export { type VaultNode, buildFileTree } from "@plannotator/shared/reference-common";
+
+// --- Session Registry ---
+
+/**
+ * Per-session state that replaces closure-based state for multi-session support.
+ * Each session gets its own plan data, decision promise, and configuration.
+ */
+export interface SessionContext {
+  sessionId: string;
+  plan: string;
+  origin: Origin;
+  permissionMode?: string;
+  sharingEnabled: boolean;
+  shareBaseUrl?: string;
+  pasteApiUrl?: string;
+  mode?: "archive";
+  customPlanPath?: string | null;
+  opencodeClient?: OpencodeClient;
+  cwd: string;
+
+  // Computed session state
+  draftKey: string;
+  slug: string;
+  project: string;
+  currentPlanPath: string;
+  previousPlan: string | null;
+  versionInfo: { version: number; totalVersions: number; project: string };
+  repoInfo: Awaited<ReturnType<typeof getRepoInfo>> | null;
+
+  // Archive mode state
+  archivePlans: ArchivedPlan[];
+  initialArchivePlan: string;
+  resolveDone: (() => void) | undefined;
+
+  // Plan review decision
+  resolveDecision: ((result: {
+    approved: boolean;
+    feedback?: string;
+    savedPath?: string;
+    agentSwitch?: string;
+    permissionMode?: string;
+  }) => void) | undefined;
+
+  // Handler instances
+  editorAnnotations: ReturnType<typeof createEditorAnnotationHandler> | null;
+  externalAnnotations: ReturnType<typeof createExternalAnnotationHandler> | null;
+
+  // Lazy cache for in-session archive browsing
+  cachedArchivePlans: ArchivedPlan[] | null;
+}
+
+/**
+ * Extract a SessionScope from a SessionContext for storage function calls.
+ */
+function scopeFromContext(ctx: SessionContext): SessionScope {
+  return { cwd: ctx.cwd, sessionId: ctx.sessionId };
+}
+
+/**
+ * In-memory session registry keyed by sessionId.
+ * Used for multi-session routing: requests to /s/<sessionId>/api/* are resolved
+ * by looking up the session context in this map.
+ */
+const sessionRegistry = new Map<string, SessionContext>();
+
+/**
+ * Register a session in the global registry.
+ */
+export function registerSessionContext(ctx: SessionContext): void {
+  sessionRegistry.set(ctx.sessionId, ctx);
+  console.log(`[plannotator] Registered session context: ${ctx.sessionId}`);
+}
+
+/**
+ * Unregister a session from the global registry.
+ */
+export function unregisterSessionContext(sessionId: string): void {
+  sessionRegistry.delete(sessionId);
+  console.log(`[plannotator] Unregistered session context: ${sessionId}`);
+}
+
+/**
+ * Look up a session context by ID. Returns undefined if not found.
+ */
+export function getSessionContext(sessionId: string): SessionContext | undefined {
+  return sessionRegistry.get(sessionId);
+}
+
+/**
+ * Regex to extract sessionId from URL path: /s/<sessionId>/api/...
+ */
+const SESSION_PATH_REGEX = /^\/s\/([^/]+)(\/api\/.*)$/;
+
+/**
+ * Parse a URL pathname to extract optional sessionId and the remaining API path.
+ * Returns { sessionId, apiPath } if the path matches /s/<id>/api/...,
+ * or { sessionId: null, apiPath } for flat /api/... paths (single-session mode).
+ */
+function parseSessionPath(pathname: string): { sessionId: string | null; apiPath: string } {
+  const match = SESSION_PATH_REGEX.exec(pathname);
+  if (match) {
+    return { sessionId: match[1], apiPath: match[2] };
+  }
+  return { sessionId: null, apiPath: pathname };
+}
 
 // --- Types ---
 
@@ -120,16 +226,19 @@ const RETRY_DELAY_MS = 500;
  *
  * Handles:
  * - Remote detection and port configuration
- * - All API routes (/api/plan, /api/approve, /api/deny, etc.)
+ * - All API routes (/s/<sessionId>/api/plan, /api/plan, etc.)
  * - Obsidian/Bear integrations
  * - Port conflict retries
+ *
+ * Multi-session: Routes are matched as /s/<sessionId>/api/* when a session
+ * prefix is present, or /api/* for backward-compatible single-session mode.
  */
 export async function startPlannotatorServer(
   options: ServerOptions
 ): Promise<ServerResult> {
   const { plan, origin, htmlContent, permissionMode, sharingEnabled = true, shareBaseUrl, pasteApiUrl, onReady, mode, customPlanPath, sessionId: optSessionId } = options;
 
-  const { sessionId = randomUUID() } = { sessionId: optSessionId };
+  const sessionId = optSessionId ?? randomUUID();
   console.log("[plannotator] sessionId:", sessionId);
 
   const { cwd: optCwd } = options;
@@ -148,9 +257,11 @@ export async function startPlannotatorServer(
   let donePromise: Promise<void> | undefined;
 
   if (mode === "archive") {
-    archivePlans = listArchivedPlans(customPlanPath ?? undefined);
+    // Archive mode doesn't have per-session isolation — use cwd only
+    const archiveScope: SessionScope = { cwd, sessionId };
+    archivePlans = listArchivedPlans(customPlanPath ?? undefined, archiveScope);
     initialArchivePlan = archivePlans.length > 0
-      ? readArchivedPlan(archivePlans[0].filename, customPlanPath ?? undefined) ?? ""
+      ? readArchivedPlan(archivePlans[0].filename, customPlanPath ?? undefined, archiveScope) ?? ""
       : "";
     donePromise = new Promise<void>((resolve) => { resolveDone = resolve; });
   }
@@ -171,13 +282,13 @@ export async function startPlannotatorServer(
   let previousPlan: string | null = null;
   let versionInfo = { version: 0, totalVersions: 0, project: "" };
 
-  let resolveDecision: (result: {
+  let resolveDecision: ((result: {
     approved: boolean;
     feedback?: string;
     savedPath?: string;
     agentSwitch?: string;
     permissionMode?: string;
-  }) => void;
+  }) => void) | undefined;
   let decisionPromise: Promise<{
     approved: boolean;
     feedback?: string;
@@ -189,15 +300,16 @@ export async function startPlannotatorServer(
   if (mode !== "archive") {
     repoInfo = await getRepoInfo();
     project = (await detectProjectName()) ?? "_unknown";
-    const historyResult = saveToHistory(project, slug, plan);
+    const sessionScope: SessionScope = { cwd, sessionId };
+    const historyResult = saveToHistory(project, slug, plan, sessionScope);
     currentPlanPath = historyResult.path;
     previousPlan =
       historyResult.version > 1
-        ? getPlanVersion(project, slug, historyResult.version - 1)
+        ? getPlanVersion(project, slug, historyResult.version - 1, sessionScope)
         : null;
     versionInfo = {
       version: historyResult.version,
-      totalVersions: getVersionCount(project, slug),
+      totalVersions: getVersionCount(project, slug, sessionScope),
       project,
     };
 
@@ -208,6 +320,37 @@ export async function startPlannotatorServer(
     // Never-resolving promise — archive mode uses waitForDone instead
     decisionPromise = new Promise(() => {});
   }
+
+  // --- Build session context and register in global registry ---
+  const sessionCtx: SessionContext = {
+    sessionId,
+    plan,
+    origin,
+    permissionMode,
+    sharingEnabled,
+    shareBaseUrl,
+    pasteApiUrl,
+    mode,
+    customPlanPath,
+    opencodeClient: options.opencodeClient,
+    cwd,
+    draftKey,
+    slug,
+    project,
+    currentPlanPath,
+    previousPlan,
+    versionInfo,
+    repoInfo,
+    archivePlans,
+    initialArchivePlan,
+    resolveDone,
+    resolveDecision,
+    editorAnnotations,
+    externalAnnotations,
+    cachedArchivePlans,
+  };
+
+  registerSessionContext(sessionCtx);
 
   // Start server with retry logic
   let server: ReturnType<typeof Bun.serve> | null = null;
@@ -220,9 +363,35 @@ export async function startPlannotatorServer(
 
         async fetch(req, server) {
           const url = new URL(req.url);
+          const parsed = parseSessionPath(url.pathname);
+
+          // --- Resolve session context ---
+          // Multi-session mode: /s/<sessionId>/api/*
+          let ctx: SessionContext;
+          if (parsed.sessionId) {
+            const found = getSessionContext(parsed.sessionId);
+            if (!found) {
+              return Response.json(
+                {
+                  error: "Session not found",
+                  sessionId: parsed.sessionId,
+                  message: `No active session with id "${parsed.sessionId}". The session may have expired or the server was restarted.`,
+                },
+                { status: 404 },
+              );
+            }
+            ctx = found;
+          } else {
+            // Single-session backward compatibility: flat /api/* paths
+            // Use the current (most recently registered) session
+            ctx = sessionCtx;
+          }
+
+          // Rewrite url.pathname to the extracted apiPath for route matching
+          const apiPath = parsed.apiPath;
 
           // API: Get a specific plan version from history
-          if (url.pathname === "/api/plan/version") {
+          if (apiPath === "/api/plan/version") {
             const vParam = url.searchParams.get("v");
             if (!vParam) {
               return new Response("Missing v parameter", { status: 400 });
@@ -231,7 +400,7 @@ export async function startPlannotatorServer(
             if (isNaN(v) || v < 1) {
               return new Response("Invalid version number", { status: 400 });
             }
-            const content = getPlanVersion(project, slug, v);
+            const content = getPlanVersion(ctx.project, ctx.slug, v, scopeFromContext(ctx));
             if (content === null) {
               return Response.json({ error: "Version not found" }, { status: 404 });
             }
@@ -239,30 +408,30 @@ export async function startPlannotatorServer(
           }
 
           // API: List all versions for the current plan
-          if (url.pathname === "/api/plan/versions") {
+          if (apiPath === "/api/plan/versions") {
             return Response.json({
-              project,
-              slug,
-              versions: listVersions(project, slug),
+              project: ctx.project,
+              slug: ctx.slug,
+              versions: listVersions(ctx.project, ctx.slug, scopeFromContext(ctx)),
             });
           }
 
           // API: List archived plans (from ~/.plannotator/plans/)
           // Cached for session lifetime — new plans won't appear during a single review
-          if (url.pathname === "/api/archive/plans" && req.method === "GET") {
+          if (apiPath === "/api/archive/plans" && req.method === "GET") {
             const customPath = url.searchParams.get("customPath") || undefined;
-            if (!cachedArchivePlans) cachedArchivePlans = listArchivedPlans(customPath);
-            return Response.json({ plans: cachedArchivePlans });
+            if (!ctx.cachedArchivePlans) ctx.cachedArchivePlans = listArchivedPlans(customPath, scopeFromContext(ctx));
+            return Response.json({ plans: ctx.cachedArchivePlans });
           }
 
           // API: Get a specific archived plan
-          if (url.pathname === "/api/archive/plan" && req.method === "GET") {
+          if (apiPath === "/api/archive/plan" && req.method === "GET") {
             const filename = url.searchParams.get("filename");
             if (!filename) {
               return Response.json({ error: "Missing filename parameter" }, { status: 400 });
             }
             const customPath = url.searchParams.get("customPath") || undefined;
-            const content = readArchivedPlan(filename, customPath);
+            const content = readArchivedPlan(filename, customPath, scopeFromContext(ctx));
             if (content === null) {
               return Response.json({ error: "Plan not found" }, { status: 404 });
             }
@@ -270,35 +439,50 @@ export async function startPlannotatorServer(
           }
 
           // API: Close archive browser (archive mode only)
-          if (url.pathname === "/api/done" && req.method === "POST") {
-            resolveDone?.();
+          if (apiPath === "/api/done" && req.method === "POST") {
+            ctx.resolveDone?.();
             return Response.json({ ok: true });
           }
 
           // API: Get plan content
-          if (url.pathname === "/api/plan") {
-            if (mode === "archive") {
+          if (apiPath === "/api/plan") {
+            if (ctx.mode === "archive") {
               return Response.json({
-                plan: initialArchivePlan,
-                origin,
+                plan: ctx.initialArchivePlan,
+                origin: ctx.origin,
                 mode: "archive",
-                archivePlans,
-                sharingEnabled,
-                shareBaseUrl,
+                archivePlans: ctx.archivePlans,
+                sharingEnabled: ctx.sharingEnabled,
+                shareBaseUrl: ctx.shareBaseUrl,
                 isWSL: wslFlag,
                 serverConfig: getServerConfig(gitUser),
+                sessionId: ctx.sessionId,
               });
             }
-            return Response.json({ plan, origin, permissionMode, sharingEnabled, shareBaseUrl, pasteApiUrl, repoInfo, previousPlan, versionInfo, projectRoot: process.cwd(), isWSL: wslFlag, serverConfig: getServerConfig(gitUser) });
+            return Response.json({
+              plan: ctx.plan,
+              origin: ctx.origin,
+              permissionMode: ctx.permissionMode,
+              sharingEnabled: ctx.sharingEnabled,
+              shareBaseUrl: ctx.shareBaseUrl,
+              pasteApiUrl: ctx.pasteApiUrl,
+              repoInfo: ctx.repoInfo,
+              previousPlan: ctx.previousPlan,
+              versionInfo: ctx.versionInfo,
+              projectRoot: process.cwd(),
+              isWSL: wslFlag,
+              serverConfig: getServerConfig(gitUser),
+              sessionId: ctx.sessionId,
+            });
           }
 
           // API: Serve a linked markdown document
-          if (url.pathname === "/api/doc" && req.method === "GET") {
+          if (apiPath === "/api/doc" && req.method === "GET") {
             return handleDoc(req);
           }
 
           // API: Update user config (write-back to ~/.plannotator/config.json)
-          if (url.pathname === "/api/config" && req.method === "POST") {
+          if (apiPath === "/api/config" && req.method === "POST") {
             try {
               const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
               const toSave: Record<string, unknown> = {};
@@ -314,17 +498,17 @@ export async function startPlannotatorServer(
           }
 
           // API: Serve images (local paths or temp uploads)
-          if (url.pathname === "/api/image") {
+          if (apiPath === "/api/image") {
             return handleImage(req);
           }
 
           // API: Upload image -> save to temp -> return path
-          if (url.pathname === "/api/upload" && req.method === "POST") {
+          if (apiPath === "/api/upload" && req.method === "POST") {
             return handleUpload(req);
           }
 
           // API: Open plan diff in VS Code
-          if (url.pathname === "/api/plan/vscode-diff" && req.method === "POST") {
+          if (apiPath === "/api/plan/vscode-diff" && req.method === "POST") {
             try {
               const body = (await req.json()) as { baseVersion: number };
 
@@ -332,12 +516,12 @@ export async function startPlannotatorServer(
                 return Response.json({ error: "Missing baseVersion" }, { status: 400 });
               }
 
-              const basePath = getPlanVersionPath(project, slug, body.baseVersion);
+              const basePath = getPlanVersionPath(ctx.project, ctx.slug, body.baseVersion, scopeFromContext(ctx));
               if (!basePath) {
                 return Response.json({ error: `Version ${body.baseVersion} not found` }, { status: 404 });
               }
 
-              const result = await openEditorDiff(basePath, currentPlanPath);
+              const result = await openEditorDiff(basePath, ctx.currentPlanPath);
               if ("error" in result) {
                 return Response.json({ error: result.error }, { status: 500 });
               }
@@ -349,49 +533,50 @@ export async function startPlannotatorServer(
           }
 
           // API: Detect Obsidian vaults
-          if (url.pathname === "/api/obsidian/vaults") {
+          if (apiPath === "/api/obsidian/vaults") {
             return handleObsidianVaults();
           }
 
           // API: List Obsidian vault files as a tree
-          if (url.pathname === "/api/reference/obsidian/files" && req.method === "GET") {
+          if (apiPath === "/api/reference/obsidian/files" && req.method === "GET") {
             return handleObsidianFiles(req);
           }
 
           // API: Read an Obsidian vault document
-          if (url.pathname === "/api/reference/obsidian/doc" && req.method === "GET") {
+          if (apiPath === "/api/reference/obsidian/doc" && req.method === "GET") {
             return handleObsidianDoc(req);
           }
 
           // API: List markdown files in a directory as a tree
-          if (url.pathname === "/api/reference/files" && req.method === "GET") {
+          if (apiPath === "/api/reference/files" && req.method === "GET") {
             return handleFileBrowserFiles(req);
           }
 
           // API: Get available agents (OpenCode only)
-          if (url.pathname === "/api/agents") {
-            return handleAgents(options.opencodeClient);
+          if (apiPath === "/api/agents") {
+            return handleAgents(ctx.opencodeClient);
           }
 
           // API: Annotation draft persistence
-          if (url.pathname === "/api/draft") {
-            if (req.method === "POST") return handleDraftSave(req, draftKey);
-            if (req.method === "DELETE") return handleDraftDelete(draftKey);
-            return handleDraftLoad(draftKey);
+          if (apiPath === "/api/draft") {
+            const draftScope = scopeFromContext(ctx);
+            if (req.method === "POST") return handleDraftSave(req, ctx.draftKey, draftScope);
+            if (req.method === "DELETE") return handleDraftDelete(ctx.draftKey, draftScope);
+            return handleDraftLoad(ctx.draftKey, draftScope);
           }
 
           // API: Editor annotations (VS Code extension)
-          const editorResponse = await editorAnnotations?.handle(req, url);
+          const editorResponse = await ctx.editorAnnotations?.handle(req, url);
           if (editorResponse) return editorResponse;
 
           // API: External annotations (SSE-based, for any external tool)
-          const externalResponse = await externalAnnotations?.handle(req, url, {
+          const externalResponse = await ctx.externalAnnotations?.handle(req, url, {
             disableIdleTimeout: () => server.timeout(req, 0),
           });
           if (externalResponse) return externalResponse;
 
           // API: Save to notes (decoupled from approve/deny)
-          if (url.pathname === "/api/save-notes" && req.method === "POST") {
+          if (apiPath === "/api/save-notes" && req.method === "POST") {
             const results: { obsidian?: IntegrationResult; bear?: IntegrationResult; octarine?: IntegrationResult } = {};
 
             try {
@@ -428,7 +613,7 @@ export async function startPlannotatorServer(
           }
 
           // API: Approve plan
-          if (url.pathname === "/api/approve" && req.method === "POST") {
+          if (apiPath === "/api/approve" && req.method === "POST") {
             // Check for note integrations and optional feedback
             let feedback: string | undefined;
             let agentSwitch: string | undefined;
@@ -493,25 +678,26 @@ export async function startPlannotatorServer(
 
             // Save annotations and final snapshot (if enabled)
             let savedPath: string | undefined;
+            const approveScope = scopeFromContext(ctx);
             if (planSaveEnabled) {
               const annotations = feedback || "";
               if (annotations) {
-                saveAnnotations(slug, annotations, planSaveCustomPath);
+                saveAnnotations(ctx.slug, annotations, planSaveCustomPath, approveScope);
               }
-              savedPath = saveFinalSnapshot(slug, "approved", plan, annotations, planSaveCustomPath);
+              savedPath = saveFinalSnapshot(ctx.slug, "approved", ctx.plan, annotations, planSaveCustomPath, approveScope);
             }
 
             // Clean up draft on successful submit
-            deleteDraft(draftKey);
+            deleteDraft(ctx.draftKey, approveScope);
 
             // Use permission mode from client request if provided, otherwise fall back to hook input
-            const effectivePermissionMode = requestedPermissionMode || permissionMode;
-            resolveDecision({ approved: true, feedback, savedPath, agentSwitch, permissionMode: effectivePermissionMode });
+            const effectivePermissionMode = requestedPermissionMode || ctx.permissionMode;
+            ctx.resolveDecision?.({ approved: true, feedback, savedPath, agentSwitch, permissionMode: effectivePermissionMode });
             return Response.json({ ok: true, savedPath });
           }
 
           // API: Deny with feedback
-          if (url.pathname === "/api/deny" && req.method === "POST") {
+          if (apiPath === "/api/deny" && req.method === "POST") {
             let feedback = "Plan rejected by user";
             let planSaveEnabled = true; // default to enabled for backwards compat
             let planSaveCustomPath: string | undefined;
@@ -533,13 +719,14 @@ export async function startPlannotatorServer(
 
             // Save annotations and final snapshot (if enabled)
             let savedPath: string | undefined;
+            const denyScope = scopeFromContext(ctx);
             if (planSaveEnabled) {
-              saveAnnotations(slug, feedback, planSaveCustomPath);
-              savedPath = saveFinalSnapshot(slug, "denied", plan, feedback, planSaveCustomPath);
+              saveAnnotations(ctx.slug, feedback, planSaveCustomPath, denyScope);
+              savedPath = saveFinalSnapshot(ctx.slug, "denied", ctx.plan, feedback, planSaveCustomPath, denyScope);
             }
 
-            deleteDraft(draftKey);
-            resolveDecision({ approved: false, feedback, savedPath });
+            deleteDraft(ctx.draftKey, denyScope);
+            ctx.resolveDecision?.({ approved: false, feedback, savedPath });
             return Response.json({ ok: true, savedPath });
           }
 
@@ -598,6 +785,9 @@ export async function startPlannotatorServer(
     isRemote,
     waitForDecision: () => decisionPromise,
     ...(donePromise && { waitForDone: () => donePromise }),
-    stop: () => server.stop(),
+    stop: () => {
+      unregisterSessionContext(sessionId);
+      server.stop();
+    },
   };
 }

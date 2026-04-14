@@ -263,6 +263,8 @@ export async function handleAnnotateCommand(
     pasteApiUrl: getPasteApiUrl(),
     gate,
     htmlContent,
+    sessionId: event.properties?.sessionID,
+    cwd: deps.directory,
     onReady: handleAnnotateServerReady,
   });
 
@@ -360,6 +362,8 @@ export async function handleAnnotateLastCommand(
     pasteApiUrl: getPasteApiUrl(),
     gate,
     htmlContent,
+    sessionId: sessionId,
+    cwd: deps.directory,
     onReady: handleAnnotateServerReady,
   });
 
