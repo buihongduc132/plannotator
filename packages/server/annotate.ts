@@ -107,6 +107,9 @@ export async function startAnnotateServer(
     pasteApiUrl,
     gate = false,
     onReady,
+    // REQ-14: sessionId and cwd enable /s/<sessionId>/api/... routing
+    sessionId,
+    cwd,
   } = options;
 
   const isRemote = isRemoteSession();
@@ -139,6 +142,22 @@ export async function startAnnotateServer(
     resolveDecision = resolve;
   });
 
+  // REQ-14: Regex to extract sessionId from URL path: /s/<sessionId>/api/...
+  const SESSION_PATH_REGEX = /^\/s\/([^/]+)(\/api\/.*)$/;
+
+  /**
+   * Parse a URL pathname to extract optional sessionId and the remaining API path.
+   * Returns { sessionId, apiPath } if the path matches /s/<id>/api/...,
+   * or { sessionId: null, apiPath } for flat /api/... paths.
+   */
+  function parseAnnotateSessionPath(pathname: string): { sessionId: string | null; apiPath: string } {
+    const match = SESSION_PATH_REGEX.exec(pathname);
+    if (match) {
+      return { sessionId: match[1], apiPath: match[2] };
+    }
+    return { sessionId: null, apiPath: pathname };
+  }
+
   // Start server with retry logic
   let server: ReturnType<typeof Bun.serve> | null = null;
 
@@ -150,9 +169,26 @@ export async function startAnnotateServer(
 
         async fetch(req, server) {
           const url = new URL(req.url);
+          // REQ-14: Support /s/<sessionId>/api/... routing when sessionId is provided
+          const parsed = sessionId
+            ? parseAnnotateSessionPath(url.pathname)
+            : { sessionId: null as string | null, apiPath: url.pathname };
+
+          // When sessionId is in the URL path, verify it matches the expected session
+          if (sessionId && parsed.sessionId && parsed.sessionId !== sessionId) {
+            return Response.json(
+              {
+                error: "Session mismatch",
+                message: `URL session "${parsed.sessionId}" does not match expected "${sessionId}"`,
+              },
+              { status: 403 },
+            );
+          }
+
+          const apiPath = parsed.apiPath;
 
           // API: Get plan content (reuse /api/plan so the plan editor UI works)
-          if (url.pathname === "/api/plan" && req.method === "GET") {
+          if (apiPath === "/api/plan" && req.method === "GET") {
             return Response.json({
               plan: markdown,
               origin,
@@ -164,14 +200,14 @@ export async function startAnnotateServer(
               shareBaseUrl,
               pasteApiUrl,
               repoInfo,
-              projectRoot: folderPath || process.cwd(),
+              projectRoot: folderPath || cwd || process.cwd(),
               isWSL: wslFlag,
               serverConfig: getServerConfig(gitUser),
             });
           }
 
           // API: Update user config (write-back to ~/.plannotator/config.json)
-          if (url.pathname === "/api/config" && req.method === "POST") {
+          if (apiPath === "/api/config" && req.method === "POST") {
             try {
               const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
               const toSave: Record<string, unknown> = {};
@@ -187,15 +223,18 @@ export async function startAnnotateServer(
           }
 
           // API: Serve images (local paths or temp uploads)
-          if (url.pathname === "/api/image") {
+          if (apiPath === "/api/image") {
             return handleImage(req);
           }
 
           // API: Serve a linked markdown document
-          // Inject source file's directory as base for relative path resolution.
+// Inject source file's directory as base for relative path resolution.
           // Skip base injection for URL annotations — there's no local directory to resolve against.
           if (url.pathname === "/api/doc" && req.method === "GET") {
             if (!url.searchParams.has("base") && !/^https?:\/\//i.test(filePath)) {
+// Inject source file's directory as base for relative path resolution
+          if (apiPath === "/api/doc" && req.method === "GET") {
+            if (!url.searchParams.has("base")) {
               const docUrl = new URL(req.url);
               docUrl.searchParams.set("base", dirname(filePath));
               return handleDoc(new Request(docUrl.toString()));
@@ -204,35 +243,35 @@ export async function startAnnotateServer(
           }
 
           // API: Detect Obsidian vaults
-          if (url.pathname === "/api/obsidian/vaults") {
+          if (apiPath === "/api/obsidian/vaults") {
             return handleObsidianVaults();
           }
 
           // API: List Obsidian vault files as a tree
-          if (url.pathname === "/api/reference/obsidian/files" && req.method === "GET") {
+          if (apiPath === "/api/reference/obsidian/files" && req.method === "GET") {
             return handleObsidianFiles(req);
           }
 
           // API: Read an Obsidian vault document
-          if (url.pathname === "/api/reference/obsidian/doc" && req.method === "GET") {
+          if (apiPath === "/api/reference/obsidian/doc" && req.method === "GET") {
             return handleObsidianDoc(req);
           }
 
           // API: List markdown files in a directory as a tree
-          if (url.pathname === "/api/reference/files" && req.method === "GET") {
+          if (apiPath === "/api/reference/files" && req.method === "GET") {
             return handleFileBrowserFiles(req);
           }
 
           // API: Upload image -> save to temp -> return path
-          if (url.pathname === "/api/upload" && req.method === "POST") {
+          if (apiPath === "/api/upload" && req.method === "POST") {
             return handleUpload(req);
           }
 
           // API: Annotation draft persistence
-          if (url.pathname === "/api/draft") {
+          if (apiPath === "/api/draft") {
             if (req.method === "POST") return handleDraftSave(req, draftKey);
             if (req.method === "DELETE") return handleDraftDelete(draftKey);
-            return handleDraftLoad(draftKey);
+            return handleDraftLoad(draftKey, { sessionId, cwd });
           }
 
           // API: External annotations (SSE-based, for any external tool)
@@ -242,7 +281,7 @@ export async function startAnnotateServer(
           if (externalResponse) return externalResponse;
 
           // API: Exit annotation session without feedback
-          if (url.pathname === "/api/exit" && req.method === "POST") {
+          if (apiPath === "/api/exit" && req.method === "POST") {
             deleteDraft(draftKey);
             resolveDecision({ feedback: "", annotations: [], exit: true });
             return Response.json({ ok: true });
@@ -256,7 +295,7 @@ export async function startAnnotateServer(
           }
 
           // API: Submit annotation feedback
-          if (url.pathname === "/api/feedback" && req.method === "POST") {
+          if (apiPath === "/api/feedback" && req.method === "POST") {
             try {
               const body = (await req.json()) as {
                 feedback: string;
@@ -325,7 +364,11 @@ export async function startAnnotateServer(
   }
 
   const port = server.port!;
-  const serverUrl = `http://localhost:${port}`;
+  // REQ-14: When sessionId is provided, embed it in the URL path so clients
+  // can target this specific session via /s/<sessionId>/api/... routing.
+  const serverUrl = sessionId
+    ? `http://localhost:${port}/s/${sessionId}`
+    : `http://localhost:${port}`;
 
   // Notify caller that server is ready
   if (onReady) {

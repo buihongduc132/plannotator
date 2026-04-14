@@ -702,7 +702,7 @@ if (args[0] === "sessions") {
   emitAnnotateOutcome(result);
   process.exit(0);
 
-} else if (args[0] === "annotate-last" || args[0] === "last") {
+  } else if (args[0] === "annotate-last" || args[0] === "last") {
   // ============================================
   // ANNOTATE LAST MESSAGE MODE
   // ============================================
@@ -731,7 +731,7 @@ if (args[0] === "sessions") {
   } else {
     // Claude Code path: resolve session log
     //
-    // Strategy (most precise → least precise):
+// Strategy (most precise → least precise):
     // 1. Ancestor-PID session metadata: walk up the process tree checking
     //    ~/.claude/sessions/<pid>.json at each hop. When invoked from a slash
     //    command's `!` bang, the direct parent is a bash subshell — Claude's
@@ -744,10 +744,14 @@ if (args[0] === "sessions") {
     //    sessions exist for the same project.
     // 4. Ancestor directory walk: handles the case where the user `cd`'d
     //    deeper into a subdirectory after session start.
+// PPID heuristic is EXCLUSIVE — only used when exactly one session is
+    // associated with the current PPID and no other candidates exist (REQ-14).
+    // When --session-id is provided, PPID is skipped entirely.
 
     if (process.env.PLANNOTATOR_DEBUG) {
       console.error(`[DEBUG] Project root: ${projectRoot}`);
       console.error(`[DEBUG] PPID: ${process.ppid}`);
+      console.error(`[DEBUG] explicitSessionId: ${explicitSessionId ?? "(none)"}`);
     }
 
     /** Try each log path, return the first that yields a message. */
@@ -763,7 +767,7 @@ if (args[0] === "sessions") {
       }
     }
 
-    // 1. Walk ancestor PIDs for a matching session metadata file
+// 1. Walk ancestor PIDs for a matching session metadata file
     const ancestorLog = resolveSessionLogByAncestorPids();
     tryLogCandidates("Ancestor PID session metadata", () => ancestorLog ? [ancestorLog] : []);
 
@@ -776,10 +780,58 @@ if (args[0] === "sessions") {
 
     // 4. Fall back to ancestor directory walk
     tryLogCandidates("Directory ancestor walk", () => findSessionLogsByAncestorWalk(projectRoot));
+// PPID-based resolution is EXCLUSIVE to exactly one session on this PPID.
+    // Only attempt PPID when:
+    //  1. No --session-id was provided (explicitSessionId is undefined), AND
+    //  2. PPID log resolves to exactly one path, AND
+    //  3. CWD slug match yields zero candidates.
+    // This prevents ambiguous PPID guesses from silently targeting the wrong session.
+    const ppidLog = resolveSessionLogByPpid();
+    const cwdLogs = findSessionLogsForCwd(projectRoot);
+    const ancestorLogs = findSessionLogsByAncestorWalk(projectRoot);
+
+    if (
+      explicitSessionId === undefined &&
+      ppidLog &&
+      cwdLogs.length === 0 &&
+      ancestorLogs.length === 0
+    ) {
+      // PPID is exclusive: exactly one session on this PPID, nothing else matches
+      tryLogCandidates("PPID session metadata (exclusive)", () => [ppidLog]);
+    } else if (explicitSessionId === undefined && cwdLogs.length > 0) {
+      // CWD slug match as fallback (PPID had zero or ambiguous results)
+      tryLogCandidates("CWD slug match", () => cwdLogs);
+    } else if (explicitSessionId === undefined) {
+      // Ancestor walk as last resort
+      tryLogCandidates("Ancestor walk", () => ancestorLogs);
+    }
+    // When explicitSessionId IS provided, the annotate server itself handles
+    // session targeting via /s/<sessionId>/api/... routing — no log lookup needed here.
   }
 
   if (!lastMessage) {
-    console.error("No rendered assistant message found in session logs.");
+    // REQ-14: actionable error — list active sessions with wait guidance
+    if (explicitSessionId === undefined) {
+      const sessions = listSessions();
+      console.error("No rendered assistant message found in session logs.");
+      console.error("");
+      if (sessions.length > 0) {
+        console.error("Active sessions:");
+        for (let i = 0; i < sessions.length; i++) {
+          const s = sessions[i];
+          const age = Math.round((Date.now() - new Date(s.startedAt).getTime()) / 60000);
+          const ageStr = age < 60 ? `${age}m` : `${Math.floor(age / 60)}h ${age % 60}m`;
+          console.error(`  #${i + 1}  ${s.mode.padEnd(9)} ${s.project.padEnd(20)} ${s.url.padEnd(28)} ${ageStr} ago`);
+        }
+        console.error("");
+        console.error("To target a specific session, run:");
+        console.error("  plannotator last --session-id <SESSION_ID>");
+        console.error("  plannotator sessions --open [N]  # reopen in browser");
+      } else {
+        console.error("No active Plannotator sessions detected.");
+        console.error("Start a new session from OpenCode or Claude Code, then try again.");
+      }
+    }
     process.exit(1);
   }
 
@@ -898,7 +950,7 @@ if (args[0] === "sessions") {
 
   const planProject = (await detectProjectName()) ?? "_unknown";
 
-  const server = await startPlannotatorServer({
+  const { port, url, isRemote, sessionId: autoSessionId, waitForDecision, stop } = await startPlannotatorServer({
     plan: planContent,
     origin: "copilot-cli",
     sharingEnabled,
@@ -916,17 +968,17 @@ if (args[0] === "sessions") {
 
   registerSession({
     pid: process.pid,
-    port: server.port,
-    url: server.url,
+    port,
+    url,
     mode: "plan",
     project: planProject,
     startedAt: new Date().toISOString(),
     label: `plan-${planProject}`,
   });
 
-  const result = await server.waitForDecision();
+  const result = await waitForDecision(autoSessionId!);
   await Bun.sleep(1500);
-  server.stop();
+  stop();
 
   // Output Copilot CLI permission decision format
   if (result.approved) {
@@ -1091,7 +1143,7 @@ if (args[0] === "sessions") {
   const planProject = (await detectProjectName()) ?? "_unknown";
 
   // Start the plan review server
-  const server = await startPlannotatorServer({
+  const { port, url, sessionId: autoSessionId, waitForDecision, stop } = await startPlannotatorServer({
     plan: planContent,
     origin: isGemini ? "gemini-cli" : detectedOrigin,
     permissionMode,
@@ -1110,8 +1162,8 @@ if (args[0] === "sessions") {
 
   registerSession({
     pid: process.pid,
-    port: server.port,
-    url: server.url,
+    port,
+    url,
     mode: "plan",
     project: planProject,
     startedAt: new Date().toISOString(),
@@ -1119,13 +1171,13 @@ if (args[0] === "sessions") {
   });
 
   // Wait for user decision (blocks until approve/deny)
-  const result = await server.waitForDecision();
+  const result = await waitForDecision(autoSessionId!);
 
   // Give browser time to receive response and update UI
   await Bun.sleep(1500);
 
   // Cleanup
-  server.stop();
+  stop();
 
   // Output decision in the appropriate format for the harness
   if (isGemini) {

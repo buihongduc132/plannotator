@@ -100,6 +100,13 @@ export interface SessionContext {
     agentSwitch?: string;
     permissionMode?: string;
   }) => void) | undefined;
+  decisionPromise: Promise<{
+    approved: boolean;
+    feedback?: string;
+    savedPath?: string;
+    agentSwitch?: string;
+    permissionMode?: string;
+  }>;
 
   // Handler instances
   editorAnnotations: ReturnType<typeof createEditorAnnotationHandler> | null;
@@ -202,8 +209,10 @@ export interface ServerResult {
   url: string;
   /** Whether running in remote mode */
   isRemote: boolean;
-  /** Wait for user decision (approve/deny) */
-  waitForDecision: () => Promise<{
+  /** The session ID for this server instance */
+  sessionId: string;
+  /** Wait for user decision (approve/deny) for a specific session */
+  waitForDecision: (sessionId: string) => Promise<{
     approved: boolean;
     feedback?: string;
     savedPath?: string;
@@ -220,6 +229,16 @@ export interface ServerResult {
 
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 500;
+
+/**
+ * Maximum concurrent sessions allowed.
+ * Controlled via PLANNOTATOR_MAX_SESSIONS env var (default: 10).
+ */
+const MAX_SESSIONS = (() => {
+  const env = process.env.PLANNOTATOR_MAX_SESSIONS;
+  const parsed = env ? parseInt(env, 10) : NaN;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 10;
+})();
 
 /**
  * Start the Plannotator server
@@ -321,6 +340,21 @@ export async function startPlannotatorServer(
     decisionPromise = new Promise(() => {});
   }
 
+  // --- Concurrent session limit check ---
+  if (sessionRegistry.size >= MAX_SESSIONS) {
+    const activeSessions = Array.from(sessionRegistry.values()).map(
+      (s) => `  - ${s.sessionId}  [${s.origin}]  ${s.project || "(no project)"}`,
+    );
+    const error = new Error(
+      `Concurrent session limit reached (${MAX_SESSIONS}). ` +
+        `Please wait for an existing session to complete before starting a new one.\n\n` +
+        `Active sessions:\n${activeSessions.join("\n")}\n\n` +
+        `You can increase the limit via PLANNOTATOR_MAX_SESSIONS env var.`,
+    );
+    (error as NodeJS.ErrnoException).code = "SESSION_LIMIT_REACHED";
+    throw error;
+  }
+
   // --- Build session context and register in global registry ---
   const sessionCtx: SessionContext = {
     sessionId,
@@ -345,6 +379,7 @@ export async function startPlannotatorServer(
     initialArchivePlan,
     resolveDone,
     resolveDecision,
+    decisionPromise,
     editorAnnotations,
     externalAnnotations,
     cachedArchivePlans,
@@ -783,7 +818,12 @@ export async function startPlannotatorServer(
     port,
     url: serverUrl,
     isRemote,
-    waitForDecision: () => decisionPromise,
+    sessionId,
+    waitForDecision: (sessionId: string) => {
+      const ctx = sessionRegistry.get(sessionId);
+      if (!ctx) throw new Error(`Session not found: ${sessionId}`);
+      return ctx.decisionPromise;
+    },
     ...(donePromise && { waitForDone: () => donePromise }),
     stop: () => {
       unregisterSessionContext(sessionId);

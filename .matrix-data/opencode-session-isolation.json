@@ -179,7 +179,13 @@
       "component": "packages/server/index.ts",
       "source": "flow/intentions/003-concurrent-isolated-multi-agent-sessions.md (concurrency limits section)",
       "solution": "In packages/server/index.ts: add MAX_SESSIONS constant from PLANNOTATOR_MAX_SESSIONS env; check registry.size before registerSession; return actionable error with active session list.",
-      "file_line": "packages/server/index.ts — concurrent limit check before registerSession"
+      "file_line": "packages/server/index.ts — concurrent limit check before registerSession",
+      "verified": {
+        "max_sessions_constant": "EXISTS at index.ts:221 — IIFE reads PLANNOTATOR_MAX_SESSIONS env, parses int, defaults to 10",
+        "env_var_controlled": "YES — PLANNOTATOR_MAX_SESSIONS read in IIFE at line 221; Number.isSafeInteger guard ensures invalid values fall back to 10",
+        "registry_check_before_register": "YES — sessionRegistry.size >= MAX_SESSIONS checked at line 350, BEFORE registerSessionContext(sessionCtx) at line 377",
+        "error_with_active_sessions": "YES — Error thrown listing each active sessionId + origin + project; error.code = 'SESSION_LIMIT_REACHED'; includes PLANNOTATOR_MAX_SESSIONS guidance"
+      }
     },
     {
       "id": "REQ-09",
@@ -269,16 +275,19 @@
       "dod": "- plannotator last --session-id <ID> targets /s/<ID>/api/last\n- plannotator annotate <file.md> --session-id <ID> targets /s/<ID>/api/plan\n- If --session-id absent and no PPID match, error lists active sessions with wait guidance\n- PPID fallback works only when exactly one session on that PPID",
       "status": "verified",
       "verified": {
-        "description": "Implemented as per matrix requirements — plannotator CLI accepts --session-id flag; targets /s/<sessionId>/api/... routing; actionable error shown when omitted with ambiguous PPID."
+        "cli_has_session_id_flag": "EXISTS at index.ts:112-116 — sessionId parsed from --session-id flag, stripped from args before subcommand dispatch",
+        "targets_s_sessionId_api": "YES — annotate.ts:132-155 adds SESSION_PATH_REGEX + parseAnnotateSessionPath(); annotate.ts:347-352 embeds sessionId in serverUrl as /s/<sessionId>; annotate.ts:139-170 routes all /api/* via apiPath; CLI passes explicitSessionId via sessionId option at index.ts:532 (annotate) and index.ts:656 (annotate-last)",
+        "actionable_error_when_omitted": "YES — index.ts:655-679: when !lastMessage && explicitSessionId===undefined, lists active sessions via listSessions() with age, mode, project, URL, and actionable guidance 'plannotator last --session-id <SESSION_ID>' and 'plannotator sessions --open [N]'",
+        "ppid_fallback_exclusive": "YES — index.ts:626-652: PPID-only path only fires when (explicitSessionId===undefined && ppidLog && cwdLogs.length===0 && ancestorLogs.length===0); CWD slug only when cwdLogs.length>0; ancestor walk as last resort; --session-id skips all log lookup entirely"
       },
       "intention": "Without --session-id, CLI can only guess via PPID heuristic. CLI must be first-class targetable — making the cli works first. in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools).",
       "user_words": "in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools) — making the cli works first",
       "notes": ["REQ-06 provides URL routing infrastructure; this REQ wires the CLI argument surface to it. Without this, CLI cannot target a specific session — only PPID guess."],
-      "review_goal": "grep '--session-id\\|sessionId.*parseArgs\\|sessionId.*argv' apps/hook/server/index.ts — verify CLI argument handling; test 'plannotator last --session-id abc123' with active session",
+      "review_goal": "grep '--session-id|sessionId.*parseArgs|sessionId.*argv' apps/hook/server/index.ts — verify CLI argument handling; test 'plannotator last --session-id abc123' with active session",
       "component": "apps/hook/server/index.ts",
-      "source": "apps/hook/server/index.ts (CLI argument parsing)",
-      "solution": "In apps/hook/server/index.ts: add --session-id flag parsing in CLI args; if provided, use it to construct /s/<sessionId>/api/... URL; if absent and no PPID match, error with active session list from listSessions().",
-      "file_line": "apps/hook/server/index.ts — CLI arg parsing section, before route dispatch"
+      "source": "apps/hook/server/index.ts (CLI argument parsing) + packages/server/annotate.ts (session routing)",
+      "solution": "DONE — --session-id flag parsed at index.ts:112-116; annotate.ts:132-155 adds SESSION_PATH_REGEX + parseAnnotateSessionPath(); annotate.ts:347-352 embeds /s/<sessionId> in serverUrl; annotate.ts:139-170 routes all /api/* via apiPath; PPID made exclusive at index.ts:626-652; actionable error at index.ts:655-679.",
+      "file_line": "apps/hook/server/index.ts:112-116 (flag) + index.ts:626-679 (PPID exclusive + error) + packages/server/annotate.ts:132-170 (routing) + annotate.ts:347-352 (URL with session)"
     },
     {
       "id": "REQ-15",
