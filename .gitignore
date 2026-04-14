@@ -51,3 +51,6 @@ opencode.json
 plannotator-local
 # Local research/reference docs (not for repo)
 /reference/
+
+# Matrix data — local requirements tracking (do not commit)
+/.matrix-data/
