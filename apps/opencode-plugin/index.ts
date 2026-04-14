@@ -472,6 +472,8 @@ Use /plannotator-last or /plannotator-annotate for manual review, or set workflo
             pasteApiUrl: getPasteApiUrl(),
             htmlContent: getPlanHtml(),
             opencodeClient: ctx.client,
+            sessionId: context.sessionID,
+            cwd: ctx.directory,
             onReady: async (url, isRemote, port) => {
               handleServerReady(url, isRemote, port);
             },
@@ -540,10 +542,87 @@ Proceed with implementation, incorporating these notes where applicable.`;
           }
         },
       }),
-    };
-  }
+annotate_last: tool({
+        description:
+          "Annotate the last assistant message from the current OpenCode session with feedback.",
+        args: {},
 
-  return plugin;
+        async execute(_args, context) {
+          // Fetch messages from the current session
+          let messages: any[] | undefined;
+          try {
+            const response = await ctx.client.session.messages({
+              path: { id: context.sessionID },
+            });
+            messages = response.data;
+          } catch {
+            return "Error: Could not fetch session messages.";
+          }
+
+          // Walk backward, find last assistant message with text
+          let lastText: string | null = null;
+          if (messages) {
+            for (let i = messages.length - 1; i >= 0; i--) {
+              const msg = messages[i];
+              if (msg.info.role === "assistant") {
+                const textParts = msg.parts
+                  .filter((p: any) => p.type === "text" && p.text?.trim())
+                  .map((p: any) => p.text);
+                if (textParts.length > 0) {
+                  lastText = textParts.join("\n");
+                  break;
+                }
+              }
+            }
+          }
+
+          if (!lastText) {
+            return "Error: No assistant message found in session.";
+          }
+
+          const sharingEnabled = await getSharingEnabled();
+          const server = await startAnnotateServer({
+            markdown: lastText,
+            filePath: "last-message",
+            origin: "opencode",
+            mode: "annotate-last",
+            sharingEnabled,
+            shareBaseUrl: getShareBaseUrl(),
+            htmlContent: getPlanHtml(),
+            sessionId: context.sessionID,
+            cwd: ctx.directory,
+            onReady: handleAnnotateServerReady,
+          });
+
+          const result = await server.waitForDecision();
+          await Bun.sleep(1500);
+          server.stop();
+
+          if (result.exit || !result.feedback) {
+            return "Annotation cancelled.";
+          }
+
+          // Inject feedback as a user prompt so the agent processes it
+          try {
+            await ctx.client.session.prompt({
+              path: { id: context.sessionID },
+              body: {
+                parts: [{
+                  type: "text",
+                  text: `# Message Annotations\n\n${result.feedback}\n\nPlease address the annotation feedback above.`,
+                }],
+              },
+            });
+          } catch {
+            // Session may not be available — return feedback as text
+            return `# Message Annotations\n\n${result.feedback}`;
+          }
+
+          return `# Annotations submitted.\n\n${result.feedback}`;
+        },
+      }),
+    },
+  };
 };
 
 export default PlannotatorPlugin;

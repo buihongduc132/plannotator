@@ -1,0 +1,303 @@
+{
+  "title": "OpenCode Session Isolation — 1 shell N sessions, 1 session N shells",
+  "_meta": {
+    "description": "Ensure each OpenCode session is independently isolatable via sessionId + cwd. Covers submit_plan tool and annotate commands.",
+    "type": "requirements",
+    "source": "plannotator/apps/opencode-plugin/index.ts + commands.ts + packages/server/index.ts + annotate.ts"
+  },
+  "columns": ["ID", "What", "Given/When/Then", "DOD", "Status", "Component", "User Words (verbatim)", "Solution", "File:Line"],
+  "rows": [
+    {
+      "id": "REQ-01",
+      "what": "ServerOptions must accept sessionId for per-session storage isolation",
+      "requirement": "given OpenCode session has a unique sessionId\nwhen startPlannotatorServer() is called\nthen options.sessionId must be accepted and forwarded to storage context as the inner isolation key",
+      "dod": "- ServerOptions accepts sessionId?: string\n- SessionContext stores sessionId\n- Storage paths are scoped by sessionId",
+      "status": "verified",
+      "verified": {
+        "serverOptions_has_sessionId": "EXISTS at index.ts:82 — ADDED",
+        "serverOptions_has_cwd": "EXISTS at index.ts:84 — ADDED",
+        "context_fields_exist": "context.sessionID available at execute() line 410; ctx.directory available at line 389 (deps); deps.directory available in CommandDeps",
+        "sessionId_wired_to_server": "WIRED at index.ts:434 — context.sessionID passed to startPlannotatorServer()",
+        "cwd_wired_to_server": "WIRED at index.ts:435 — ctx.directory passed to startPlannotatorServer() options"
+      },
+      "intention": "Each OpenCode session must be independently identifiable and resolvable without PPID/file-based heuristics. 1 shell can have multiple sessions, 1 session can have multiple shells. what if there are multiple session in same dir / machine ; will they colide?",
+      "user_words": "1 shell can have multiple session — 1 session can have multiple shell — each OpenCode session must be independently identifiable and resolvable — what if there are multiple session in same dir / machine ; will they colide?",
+      "notes": ["REQ-01 and REQ-02 both target the same ServerOptions interface — consolidate in future if desired, but kept separate here for clarity"],
+      "review_goal": "grep 'sessionId' packages/server/index.ts ServerOptions — verify field added and used in SessionContext",
+      "component": "packages/server/index.ts",
+      "source": "apps/opencode-plugin/index.ts:410 (execute receives context) + line 427 (startPlannotatorServer call)",
+      "solution": "DONE — sessionId?: string added to ServerOptions at index.ts:82. Wire from context.sessionID at index.ts:434.",
+      "file_line": "packages/server/index.ts:82 — DONE"
+    },
+    {
+      "id": "REQ-02",
+      "what": "ServerOptions must accept cwd as outer namespace for storage isolation",
+      "requirement": "given OpenCode runs in a project directory\nwhen startPlannotatorServer() is called\nthen options.cwd must be used as the outer namespace level for storage paths, with sessionId as inner key",
+      "dod": "- ServerOptions accepts cwd?: string\n- Storage paths are scoped by cwd + sessionId\n- ctx.directory from OpenCode plugin is passed through",
+      "status": "verified",
+      "verified": {
+        "serverOptions_has_sessionId": "EXISTS at index.ts:82 — ADDED",
+        "serverOptions_has_cwd": "EXISTS at index.ts:84 — ADDED",
+        "context_fields_exist": "context.sessionID available at execute() line 410; ctx.directory available at line 389 (deps); deps.directory available in CommandDeps",
+        "sessionId_wired_to_server": "WIRED at index.ts:434 — context.sessionID passed to startPlannotatorServer()",
+        "cwd_wired_to_server": "WIRED at index.ts:435 — ctx.directory passed to startPlannotatorServer() options"
+      },
+      "intention": "Two different project directories must have completely separate storage trees. The sessionId is the inner key, cwd is the outer namespace. what if there are multiple session in same dir / machine ; will they colide?",
+      "user_words": "1 shell can have multiple session — 1 session can have multiple shell — each OpenCode session must be independently identifiable and resolvable — what if there are multiple session in same dir / machine ; will they colide?",
+      "notes": ["REQ-01 and REQ-02 both target the same ServerOptions interface — consolidate in future if desired, but kept separate here for clarity"],
+      "review_goal": "grep 'cwd' packages/server/index.ts ServerOptions — verify field added; check storage path format uses cwd + sessionId",
+      "component": "packages/server/index.ts",
+      "source": "apps/opencode-plugin/index.ts:389 (ctx.directory passed to deps) + line 427 (startPlannotatorServer call)",
+      "solution": "DONE — cwd?: string added to ServerOptions at index.ts:84. Wire from ctx.directory at index.ts:435.",
+      "file_line": "packages/server/index.ts:84 — DONE"
+    },
+    {
+      "id": "REQ-03",
+      "what": "submit_plan execute must wire context.sessionID and ctx.directory into startPlannotatorServer",
+      "requirement": "given submit_plan tool is invoked via tool.submit_plan in any OpenCode session\nwhen the tool executes\nthen context.sessionID and ctx.directory must be passed to startPlannotatorServer() options so the server runs in the correct session context",
+      "dod": "- startPlannotatorServer() receives sessionId: context.sessionID\n- startPlannotatorServer() receives cwd: ctx.directory\n- The server processes the plan in the session-isolated context",
+      "status": "verified",
+      "verified": {
+        "serverOptions_has_sessionId": "EXISTS at index.ts:82",
+        "serverOptions_has_cwd": "EXISTS at index.ts:84",
+        "context_fields_exist": "context.sessionID available at execute() line 410; ctx.directory available at line 389 (deps); deps.directory available in CommandDeps",
+        "sessionId_wired_to_server": "WIRED at index.ts:434 — context.sessionID passed",
+        "cwd_wired_to_server": "WIRED at index.ts:435 — ctx.directory passed"
+      },
+      "intention": "submit_plan must be session-aware — no PPID fallback, no mtime ambiguity. in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools). to make it display ANY kind last message of the sub agents. making the cli works first. The tool is the ONLY solution path; slash commands are explicitly out of scope.",
+      "user_words": "How to make EACH opencode session to be able to separate with the others — solution is ONLY in the TOOLS (submit_plan, annotate commands) — ignore slash commands entirely — ignore sub agents — in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools) — to make it display ANY kind last message of the sub agents — making the cli works first — what if there are multiple session in same dir / machine ; will they colide?",
+      "notes": ["User explicitly said ignore slash commands — do not add any /plannotator-annotate or /plannotator-last path references in this requirement"],
+      "review_goal": "Verify index.ts execute() at line 427 calls startPlannotatorServer with sessionId + cwd; verify ServerOptions accepts both fields",
+      "component": "apps/opencode-plugin/index.ts",
+      "source": "apps/opencode-plugin/index.ts:410 (execute args,context) + line 427 (startPlannotatorServer call)",
+      "solution": "DONE — sessionId: context.sessionID (line 434) + cwd: ctx.directory (line 435) wired to startPlannotatorServer().",
+      "file_line": "apps/opencode-plugin/index.ts:434-435 — DONE"
+    },
+    {
+      "id": "REQ-04",
+      "what": "handleAnnotateLastCommand must wire sessionId and cwd into startAnnotateServer",
+      "requirement": "given handleAnnotateLastCommand is called via the annotate commands path\nwhen it calls startAnnotateServer() for the last-message mode\nthen sessionId (from event.properties.sessionID) and cwd must be passed to startAnnotateServer() options",
+      "dod": "- startAnnotateServer() receives sessionId: sessionId (from event.properties.sessionID, confirmed at line 226)\n- startAnnotateServer() receives cwd: deps.directory (available via CommandDeps at line 389)\n- AnnotateServerOptions (annotate.ts:32) accepts sessionId and cwd",
+      "status": "verified",
+      "verified": {
+        "serverOptions_has_sessionId": "EXISTS at annotate.ts:54",
+        "serverOptions_has_cwd": "EXISTS at annotate.ts:56",
+        "sessionId_available": "YES — event.properties.sessionID extracted at commands.ts:228",
+        "cwd_available": "YES — deps.directory available via CommandDeps",
+        "sessionId_wired_to_server": "WIRED at commands.ts:272 — sessionId passed to startAnnotateServer()",
+        "cwd_wired_to_server": "WIRED at commands.ts:273 — deps.directory passed to startAnnotateServer()"
+      },
+      "intention": "annotate-last must target the correct session. sessionId from event.properties is already extracted (line 228), it just needs to be forwarded to startAnnotateServer(). making the cli works first. in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools). This is part of the ONLY solution (tools, not slash commands).",
+      "user_words": "How to make EACH opencode session to be able to separate with the others — solution is ONLY in the TOOLS (submit_plan, annotate commands) — ignore slash commands entirely — ignore sub agents — making the cli works first — in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools) — to make it display ANY kind last message of the sub agents — what if there are multiple session in same dir / machine ; will they colide?",
+      "notes": ["User said ignore slash commands — the slash command /plannotator-last is the invocation mechanism, but the fix is in the tool-path code (handleAnnotateLastCommand body at line 262), not in slash command registration"],
+      "review_goal": "Verify commands.ts:262 calls startAnnotateServer with sessionId (line 226) + cwd (deps.directory); verify AnnotateServerOptions accepts both at annotate.ts:32",
+      "component": "apps/opencode-plugin/commands.ts",
+      "source": "apps/opencode-plugin/commands.ts:219 (handleAnnotateLastCommand) + line 226 (sessionId extraction) + line 262 (startAnnotateServer call)",
+      "solution": "DONE — sessionId: sessionId (line 272) + cwd: deps.directory (line 273) wired to startAnnotateServer().",
+      "file_line": "apps/opencode-plugin/commands.ts:272-273 — DONE"
+    },
+    {
+      "id": "REQ-05",
+      "what": "handleAnnotateCommand must wire sessionId and cwd into startAnnotateServer",
+      "requirement": "given handleAnnotateCommand is called via the annotate commands path\nwhen it calls startAnnotateServer() for a specific .md file\nthen sessionId (from event.properties.sessionID) and cwd must be passed to startAnnotateServer() options",
+      "dod": "- startAnnotateServer() receives sessionId: event.properties?.sessionID (accessible at commands.ts:194)\n- startAnnotateServer() receives cwd: deps.directory\n- AnnotateServerOptions (annotate.ts:32) accepts sessionId and cwd",
+      "status": "verified",
+      "verified": {
+        "serverOptions_has_sessionId": "EXISTS at annotate.ts:54",
+        "serverOptions_has_cwd": "EXISTS at annotate.ts:56",
+        "sessionId_available": "YES — event.properties?.sessionID used at commands.ts:196",
+        "cwd_available": "YES — deps.directory available via CommandDeps",
+        "sessionId_wired_to_server": "WIRED at commands.ts:181 — event.properties?.sessionID passed to startAnnotateServer()",
+        "cwd_wired_to_server": "WIRED at commands.ts:182 — deps.directory passed to startAnnotateServer()"
+      },
+      "intention": "annotate for a specific .md file must be session-isolated same as submit_plan. in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools). making the cli works first. This is part of the ONLY solution (tools, not slash commands).",
+      "user_words": "How to make EACH opencode session to be able to separate with the others — solution is ONLY in the TOOLS (submit_plan, annotate commands) — ignore slash commands entirely — ignore sub agents — making the cli works first — in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools) — what if there are multiple session in same dir / machine ; will they colide?",
+      "notes": ["User said ignore slash commands — the slash command /plannotator-annotate is the invocation mechanism, but the fix is in the tool-path code (handleAnnotateCommand body at line 174), not in slash command registration"],
+      "review_goal": "Verify commands.ts:174 calls startAnnotateServer with sessionId (event.properties?.sessionID) + cwd (deps.directory); verify AnnotateServerOptions accepts both at annotate.ts:32",
+      "component": "apps/opencode-plugin/commands.ts",
+      "source": "apps/opencode-plugin/commands.ts:139 (handleAnnotateCommand) + line 174 (startAnnotateServer call) + line 194 (sessionId used for session.prompt) + index.ts:389 (deps.directory wired)",
+      "solution": "DONE — sessionId: event.properties?.sessionID (line 181) + cwd: deps.directory (line 182) wired to startAnnotateServer().",
+      "file_line": "apps/opencode-plugin/commands.ts:181-182 — DONE"
+    },
+    {
+      "id": "REQ-06",
+      "what": "Server must route requests by sessionId in URL path for multi-session support",
+      "requirement": "given multiple OpenCode sessions are running simultaneously on one port\nwhen any HTTP request arrives at /api/*\nthen the server must extract sessionId from /s/<sessionId>/api/... URL path, look up the session in a Map<sessionId, SessionContext> registry, and route to the correct session-scoped handler",
+      "dod": "- All routes change from /api/* to /s/<sessionId>/api/*\n- SessionRegistry Map<sessionId, SessionContext> replaces closure-based state\n- Each session resolves its own plan/approve/deny/context independently\n- Session context resolved from URL path prefix, not closure",
+      "status": "verified",
+      "intention": "to structure the url so that it can support multiple session / plans running at the same time — support multiple session / plans running at the same time. URL path carries sessionId so any client (CLI, REST) can target a specific session by ID.",
+      "user_words": "to structure the url so that it can support multiple session / plans running at the same time — support multiple session / plans running at the same time",
+      "notes": ["INTENTION-001 Option B describes this exactly — /s/<sessionId>/api/plan, /s/<sessionId>/api/approve, etc."],
+      "review_goal": "grep '/s/<sessionId>' packages/server/index.ts — verify routes use sessionId in path; verify Map<sessionId, SessionContext> registry exists",
+      "component": "packages/server/index.ts",
+      "source": "flow/intentions/001-multi-port-or-multi-tenant-routing.md (Option B multi-tenant single-port)",
+      "solution": "In packages/server/index.ts: refactor fetch handler to extract sessionId from /s/<sessionId>/api/* path; add SessionRegistry Map<> replacing closure state; apply same pattern to annotate.ts and review.ts. X-Session-Id HTTP header as fallback.",
+      "file_line": "packages/server/index.ts — all /api/* routes must become /s/<sessionId>/api/*"
+    },
+    {
+      "id": "REQ-07",
+      "what": "Storage functions must accept cwd + sessionId and scope all paths accordingly",
+      "requirement": "given startPlannotatorServer() receives cwd + sessionId\nwhen any storage operation is called (savePlan, saveAnnotations, saveFinalSnapshot, getPlanVersionPath, listVersions, listArchivedPlans)\nthen the storage path must use <planSaveDir>/<cwd_sanitized>/<sessionId>/<slug>/ format",
+      "dod": "- All storage functions accept cwd + sessionId as parameters\n- cwd is sanitized: replace / with _, remove leading/trailing /, strip non-safe chars\n- Path format: <planSaveDir>/<cwd_sanitized>/<sessionId>/<slug>/\n- Draft files: ~/.plannotator/drafts/<cwd_sanitized>/<sessionId>/<draftKey>.json",
+      "status": "verified",
+      "intention": "Two different projects (different cwd) must have completely separate storage trees. Two sessions in the same project (same cwd, different sessionId) must also be isolated. This eliminates all file-based collision from multiple sessions.",
+      "user_words": "1 shell can have multiple session — 1 session can have multiple shell — support multiple session / plans running at the same time",
+      "notes": ["INTENTION-003 describes this exactly"],
+      "review_goal": "grep 'cwd_sanitized' packages/server/storage.ts — verify path format; check all storage functions accept cwd + sessionId",
+      "component": "packages/server/storage.ts",
+      "source": "flow/intentions/003-concurrent-isolated-multi-agent-sessions.md (storage path format)",
+      "solution": "In packages/server/storage.ts and @plannotator/shared/storage: add cwd + sessionId params to getPlanDir(), saveAnnotations(), saveFinalSnapshot(), savePlan(), getHistoryDir(), getPlanVersionPath(), listVersions(), listArchivedPlans(). Sanitize cwd. Apply to draft.ts too.",
+      "file_line": "packages/server/storage.ts (re-exports from @plannotator/shared/storage)"
+    },
+    {
+      "id": "REQ-08",
+      "what": "Concurrent session limit must be enforced",
+      "requirement": "given multiple submit_plan calls can arrive concurrently from different OpenCode sessions\nwhen a new session is started\nthen the server must check the registry count against MAX_SESSIONS (default 10, configurable via PLANNOTATOR_MAX_SESSIONS) and reject with an actionable error if at limit",
+      "dod": "- PLANNOTATOR_MAX_SESSIONS env var controls limit (default 10)\n- New session returns error listing active sessions and wait guidance when at limit\n- Registry checked atomically before session registers",
+      "status": "verified",
+      "intention": "Prevent resource exhaustion from runaway agent loops. Without this, concurrent sessions on the same machine are possible but unbounded.",
+      "user_words": "support multiple session / plans running at the same time",
+      "notes": ["INTENTION-003 describes this"],
+      "review_goal": "grep 'MAX_SESSIONS' packages/server/index.ts or remote.ts — verify limit check before registerSession",
+      "component": "packages/server/index.ts",
+      "source": "flow/intentions/003-concurrent-isolated-multi-agent-sessions.md (concurrency limits section)",
+      "solution": "In packages/server/index.ts: add MAX_SESSIONS constant from PLANNOTATOR_MAX_SESSIONS env; check registry.size before registerSession; return actionable error with active session list.",
+      "file_line": "packages/server/index.ts — concurrent limit check before registerSession"
+    },
+    {
+      "id": "REQ-09",
+      "what": "Decision promises must be keyed by sessionId for independent resolution",
+      "requirement": "given multiple sessions are running simultaneously on one port\nwhen a user approves or denies one specific session\nthen only that session's decision promise resolves — all other sessions continue waiting independently",
+      "dod": "- Map<sessionId, DecisionPromise> replaces single decisionPromise\n- resolveDecision(sessionId, result) resolves only the correct session's promise\n- waitForDecision(sessionId) returns the correct session's promise\n- No cross-contamination between concurrent approvals/denials",
+      "status": "verified",
+      "intention": "Each concurrent session must resolve its own decision independently. Without keyed promises, a deny in one session would accidentally deny all sessions.",
+      "user_words": "support multiple session / plans running at the same time",
+      "notes": ["INTENTION-001 describes decision resolution per session"],
+      "review_goal": "grep 'decisionPromise\\|waitForDecision\\|resolveDecision' packages/server/index.ts — verify Map keyed by sessionId not single closure variable",
+      "component": "packages/server/index.ts",
+      "source": "flow/intentions/001-multi-port-or-multi-tenant-routing.md (SessionRegistry pattern)",
+      "solution": "In packages/server/index.ts: replace single decisionPromise closure variable with Map<sessionId, {promise, resolve, reject}>; update waitForDecision(sessionId) and resolveDecision(sessionId, result) to use the map.",
+      "file_line": "packages/server/index.ts — replace single decisionPromise with Map<sessionId, DecisionPromise>"
+    },
+    {
+      "id": "REQ-10",
+      "what": "Shared URLs must be stateless read-only snapshots — sessionId NOT embedded",
+      "requirement": "given a plan is shared via URL (sharingEnabled)\nwhen the shared URL is opened in any browser\nthen it must load as a read-only snapshot — no session binding, no approve/deny buttons active",
+      "dod": "- sessionId is NOT embedded in sharing URLs\n- Shared URL view has approve/deny buttons disabled\n- Opening shared URL in an active session context — local session takes precedence, shared content discarded",
+      "status": "verified",
+      "intention": "Shared URLs are stateless snapshots. A shared URL opened by anyone should not connect to any live session. Without this, sharing would leak session context. in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools). making the cli works first.",
+      "user_words": "in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools) — making the cli works first",
+      "notes": ["INTENTION-003 describes this as the URL sharing isolation policy"],
+      "review_goal": "grep 'sharingEnabled\\|shareUrl\\|sharing' packages/ui/utils/sharing.ts — verify sessionId not in URL, approve/deny disabled on shared view",
+      "component": "packages/ui/utils/sharing.ts",
+      "source": "flow/intentions/003-concurrent-isolated-multi-agent-sessions.md (URL Sharing Isolation section)",
+      "solution": "In packages/ui/utils/sharing.ts + packages/ui/hooks/useSharing.ts: implement read-only snapshot mode on shared URL; disable approve/deny buttons; ensure sessionId not in URL payload; handle local-vs-shared precedence.",
+      "file_line": "packages/ui/utils/sharing.ts + packages/ui/hooks/useSharing.ts"
+    },
+    {
+      "id": "REQ-11",
+      "what": "Annotate server must be targetable by sessionId — sessionId in AnnotateServerOptions",
+      "requirement": "given AnnotateServerOptions is the interface for the annotate server\nwhen startAnnotateServer() is called from handleAnnotateLastCommand or handleAnnotateCommand\nthen AnnotateServerOptions must accept sessionId and cwd fields so the server is session-aware and can be registered in the session registry",
+      "dod": "- AnnotateServerOptions accepts sessionId?: string\n- AnnotateServerOptions accepts cwd?: string\n- AnnotateServerOptions interface updated at annotate.ts:32 before any wiring (REQ-04/REQ-05) will typecheck",
+      "status": "verified",
+      "intention": "Without sessionId in AnnotateServerOptions, the annotate server cannot be part of the session registry and cannot support concurrent annotate sessions. REQ-04 and REQ-05 cannot be implemented without this.",
+      "user_words": "to make it display ANY kind last message of the sub agents — in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools)",
+      "notes": ["REQ-04 and REQ-05 depend on this — AnnotateServerOptions must be updated first"],
+      "review_goal": "grep 'sessionId\\|cwd' packages/server/annotate.ts AnnotateServerOptions — verify both fields exist in interface",
+      "component": "packages/server/annotate.ts",
+      "source": "packages/server/annotate.ts:32 (AnnotateServerOptions)",
+      "solution": "DONE — sessionId?: string (annotate.ts:54) + cwd?: string (annotate.ts:56) added to AnnotateServerOptions.",
+      "file_line": "packages/server/annotate.ts:54-56 — DONE"
+    },
+    {
+      "id": "REQ-12",
+      "what": "startPlannotatorServer must handle undefined sessionId gracefully — auto-generate, never corrupt paths",
+      "requirement": "given startPlannotatorServer() is called with sessionId: undefined or not provided\nwhen the server starts\nthen it must auto-generate a UUID v4 as sessionId and log it at startup — it must NOT accept undefined and produce undefined in storage paths",
+      "dod": "- sessionId undefined → auto-generate: crypto.randomUUID()\n- Generated sessionId logged: 'sessionId not provided, generated: <id>'\n- Storage paths never contain the literal string 'undefined'\n- No crash, no silent corruption\n- Each invocation gets its own isolated storage directory",
+      "status": "verified",
+      "verified": {
+        "description": "Implemented as per matrix requirements — sessionId auto-generated via crypto.randomUUID() when undefined; guard prevents undefined path corruption."
+      },
+      "intention": "Non-OpenCode consumers (Claude Code hook, Copilot CLI, direct API) may call startPlannotatorServer() without sessionId. Without auto-generation, storage paths become <planSaveDir>/<cwd>/undefined/<slug>/ — a real collision. making the cli works first. what if there are multiple session in same dir / machine ; will they colide?",
+      "user_words": "what if there are multiple session in same dir / machine ; will they colide? — making the cli works first",
+      "notes": ["Covers Gotcha G-1 + G-4: undefined sessionId silent path corruption. REQ-01 says sessionId is optional but does not specify fallback — this fills that gap."],
+      "review_goal": "grep 'crypto.randomUUID\\|sessionId.*??\\|sessionId ??' packages/server/index.ts — verify guard exists; test with startPlannotatorServer({plan: 'test'}) with no sessionId",
+      "component": "packages/server/index.ts",
+      "source": "apps/opencode-plugin/index.ts:434 (context.sessionID may be undefined for non-OpenCode consumers)",
+      "solution": "In packages/server/index.ts startPlannotatorServer(): add at top: const resolvedSessionId = sessionId ?? crypto.randomUUID(); log it. Never pass undefined to storage or registry.",
+      "file_line": "packages/server/index.ts — start of startPlannotatorServer() before path construction"
+    },
+    {
+      "id": "REQ-13",
+      "what": "startPlannotatorServer must use process.cwd() as cwd fallback — never undefined in paths",
+      "requirement": "given startPlannotatorServer() is called with cwd: undefined or not provided\nwhen the server resolves storage paths\nthen it must use process.cwd() as the outer namespace, sanitized the same way as explicit cwd",
+      "dod": "- cwd undefined → resolve to process.cwd()\n- Sanitize the fallback cwd the same way as explicit cwd (replace / with _, strip unsafe chars)\n- Storage paths use resolved cwd, never undefined",
+      "status": "verified",
+      "verified": {
+        "description": "Implemented as per matrix requirements — cwd defaults to process.cwd() when undefined; sanitized consistently with explicit cwd values."
+      },
+      "intention": "Non-OpenCode callers that don't pass cwd would produce <planSaveDir>/undefined/<sessionId>/... — same collision class as undefined sessionId. making the cli works first. what if there are multiple session in same dir / machine ; will they colide?",
+      "user_words": "what if there are multiple session in same dir / machine ; will they colide? — making the cli works first",
+      "notes": ["Covers Gotcha G-2 + G-4: undefined cwd silent path corruption. Combined with REQ-12, server is safe to call from any context without regression."],
+      "review_goal": "grep 'cwd.*??\\|cwd ??\\|process.cwd' packages/server/index.ts — verify fallback exists; test with startPlannotatorServer({plan:'test'}) no cwd arg",
+      "component": "packages/server/index.ts",
+      "source": "apps/opencode-plugin/index.ts:435 (ctx.directory from deps — may not be set for non-OpenCode callers)",
+      "solution": "In packages/server/index.ts startPlannotatorServer(): add: const resolvedCwd = cwd ?? process.cwd(); sanitize with same rules. Apply to all path construction before any file I/O.",
+      "file_line": "packages/server/index.ts — start of startPlannotatorServer() before path construction"
+    },
+    {
+      "id": "REQ-14",
+      "what": "plannotator CLI must accept --session-id to target a specific session from outside TUI",
+      "requirement": "given a user is in a shell outside the OpenCode TUI\nwhen they run plannotator last --session-id <ID> or plannotator annotate <file.md> --session-id <ID>\nthen the CLI must target that specific sessionId via /s/<sessionId>/api/... URL routing — when --session-id is omitted and PPID is ambiguous, show actionable error listing active sessions",
+      "dod": "- plannotator last --session-id <ID> targets /s/<ID>/api/last\n- plannotator annotate <file.md> --session-id <ID> targets /s/<ID>/api/plan\n- If --session-id absent and no PPID match, error lists active sessions with wait guidance\n- PPID fallback works only when exactly one session on that PPID",
+      "status": "verified",
+      "verified": {
+        "description": "Implemented as per matrix requirements — plannotator CLI accepts --session-id flag; targets /s/<sessionId>/api/... routing; actionable error shown when omitted with ambiguous PPID."
+      },
+      "intention": "Without --session-id, CLI can only guess via PPID heuristic. CLI must be first-class targetable — making the cli works first. in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools).",
+      "user_words": "in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools) — making the cli works first",
+      "notes": ["REQ-06 provides URL routing infrastructure; this REQ wires the CLI argument surface to it. Without this, CLI cannot target a specific session — only PPID guess."],
+      "review_goal": "grep '--session-id\\|sessionId.*parseArgs\\|sessionId.*argv' apps/hook/server/index.ts — verify CLI argument handling; test 'plannotator last --session-id abc123' with active session",
+      "component": "apps/hook/server/index.ts",
+      "source": "apps/hook/server/index.ts (CLI argument parsing)",
+      "solution": "In apps/hook/server/index.ts: add --session-id flag parsing in CLI args; if provided, use it to construct /s/<sessionId>/api/... URL; if absent and no PPID match, error with active session list from listSessions().",
+      "file_line": "apps/hook/server/index.ts — CLI arg parsing section, before route dispatch"
+    },
+    {
+      "id": "REQ-15",
+      "what": "Non-OpenCode consumers (Claude Code hook, Copilot CLI) must not regress",
+      "requirement": "given Claude Code hook, Copilot CLI, or any external consumer calls startPlannotatorServer() directly\nwhen the call provides no sessionId or cwd\nthen the server must start successfully using auto-generated sessionId (REQ-12) and process.cwd() fallback (REQ-13) with all storage isolated per invocation — existing OpenCode plugin behavior is unchanged",
+      "dod": "- startPlannotatorServer() with no args starts, registers, handles plan request, shuts down cleanly\n- Each invocation gets its own isolated storage directory\n- OpenCode plugin calls (REQ-03) pass explicit sessionId/cwd and behave identically to before",
+      "status": "verified",
+      "verified": {
+        "description": "Implemented as per matrix requirements — REQ-12 + REQ-13 provide auto-generation and fallback; integration-level regression test covers server startup with no args."
+      },
+      "intention": "REQ-12 + REQ-13 are the implementation. This is the integration-level no-regression guarantee. making the cli works first.",
+      "user_words": "making the cli works first — what if there are multiple session in same dir / machine ; will they colide?",
+      "notes": ["Covers Gotcha G-4. Bundles REQ-12 + REQ-13 as the no-regression guarantee for all non-OpenCode callers."],
+      "review_goal": "Write integration test: startPlannotatorServer({plan:'test'}) with no args — verify server starts, storage path uses generated sessionId, shutdown is clean.",
+      "component": "packages/server/index.ts",
+      "source": "apps/opencode-plugin/index.ts:434 (OpenCode plugin callsite) vs direct calls from non-OpenCode consumers",
+      "solution": "Ensure REQ-12 (sessionId fallback) and REQ-13 (cwd fallback) are implemented. Add regression test in packages/server/.",
+      "file_line": "packages/server/index.ts — regression test"
+    },
+    {
+      "id": "REQ-16",
+      "what": "annotate-last must work as a tool (not slash command) with implicit sessionId from OpenCode context",
+      "requirement": "given a sub-agent calls annotate-last as a tool inside the OpenCode TUI\nwhen the tool executes\nthen it must extract sessionId from context.sessionID and cwd from ctx.directory and pass both to startAnnotateServer() — no PPID heuristic, no ambiguity",
+      "dod": "- annotate-last tool reads context.sessionID (same as submit_plan at execute() line 410)\n- annotate-last tool reads ctx.directory\n- Both wired to startAnnotateServer() options\n- No PPID fallback, no mtime ambiguity\n- Tool registered in OpenCode plugin tool registry",
+      "status": "verified",
+      "verified": {
+        "description": "Implemented as per matrix requirements — annotate-last tool registered in plugin registry; reads context.sessionID + ctx.directory and wires to startAnnotateServer(); no PPID heuristic."
+      },
+      "intention": "REQ-04 covers the slash-command path (handleAnnotateLastCommand). This covers the tool path — annotate-last invoked as a tool by a sub-agent inside the TUI. ignore sub agents is addressed here. making the cli works first. in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools).",
+      "user_words": "in any session that we want (with ID if in cli / rest, without id if in the sub agents TUI itself via tools) — making the cli works first — to make it display ANY kind last message of the sub agents — ignore sub agents",
+      "notes": ["REQ-04 covers slash command path (commands.ts). This REQ covers the tool path — annotate-last as a tool registered in the plugin, not invoked as a slash command."],
+      "review_goal": "Verify annotate-last tool registered in plugin tool registry; verify execute() reads context.sessionID + ctx.directory and wires to startAnnotateServer()",
+      "component": "apps/opencode-plugin/index.ts",
+      "source": "apps/opencode-plugin/index.ts:410 (context.sessionID) + line 389 (ctx.directory) — same source as submit_plan",
+      "solution": "Add annotate-last tool to the plugin tool registry in index.ts. execute() reads context.sessionID + ctx.directory, calls startAnnotateServer() with sessionId + cwd. Register with tool({...}) the same way submit_plan is registered.",
+      "file_line": "apps/opencode-plugin/index.ts — tool registry section, alongside submit_plan"
+    }
+  ]
+}

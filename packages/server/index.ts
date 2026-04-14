@@ -13,6 +13,7 @@
  */
 
 import type { Origin } from "@plannotator/shared/agents";
+import { randomUUID } from "crypto";
 import { resolve } from "path";
 import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
 import { openEditorDiff } from "./ide";
@@ -82,6 +83,10 @@ export interface ServerOptions {
   mode?: "archive";
   /** Custom plan save path — used by archive mode to find saved plans */
   customPlanPath?: string | null;
+  /** Session ID used to track state in the session store */
+  sessionId?: string;
+  /** Current working directory for file operations */
+  cwd?: string;
 }
 
 export interface ServerResult {
@@ -122,7 +127,14 @@ const RETRY_DELAY_MS = 500;
 export async function startPlannotatorServer(
   options: ServerOptions
 ): Promise<ServerResult> {
-  const { plan, origin, htmlContent, permissionMode, sharingEnabled = true, shareBaseUrl, pasteApiUrl, onReady, mode, customPlanPath } = options;
+  const { plan, origin, htmlContent, permissionMode, sharingEnabled = true, shareBaseUrl, pasteApiUrl, onReady, mode, customPlanPath, sessionId: optSessionId } = options;
+
+  const { sessionId = randomUUID() } = { sessionId: optSessionId };
+  console.log("[plannotator] sessionId:", sessionId);
+
+  const { cwd: optCwd } = options;
+  const cwd = optCwd ?? process.cwd();
+  console.log("[plannotator] cwd:", cwd);
 
   const isRemote = isRemoteSession();
   const configuredPort = getServerPort();

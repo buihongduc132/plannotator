@@ -120,6 +120,7 @@ if (browserIdx !== -1 && args[browserIdx + 1]) {
   args.splice(browserIdx, 2);
 }
 
+D
 // Global flag: --no-jina (disables Jina Reader for URL annotation)
 const noJinaIdx = args.indexOf("--no-jina");
 const cliNoJina = noJinaIdx !== -1;
@@ -183,6 +184,12 @@ function emitAnnotateOutcome(result: {
   }
   if (result.feedback) console.log(result.feedback);
 }
+// Global flag: --session-id <id>  (for REQ-14: target a specific session from CLI)
+const sessionIdIdx = args.indexOf("--session-id");
+const explicitSessionId = sessionIdIdx !== -1 && args[sessionIdIdx + 1]
+  ? args[sessionIdIdx + 1]
+  : undefined;
+if (sessionIdIdx !== -1) args.splice(sessionIdIdx, explicitSessionId ? 2 : 1);
 
 if (isTopLevelHelpInvocation(args)) {
   console.log(formatTopLevelHelp());
@@ -652,7 +659,10 @@ if (args[0] === "sessions") {
     origin: detectedOrigin,
     mode: annotateMode,
     folderPath,
-    sourceInfo,
+    D
+    sourceInfo,,
+    sessionId: explicitSessionId,
+    cwd: projectRoot,,
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
@@ -784,6 +794,8 @@ if (args[0] === "sessions") {
     filePath: "last-message",
     origin: detectedOrigin,
     mode: "annotate-last",
+    sessionId: explicitSessionId,
+    cwd: projectRoot,
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
