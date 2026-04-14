@@ -65,6 +65,19 @@ export { type VaultNode, buildFileTree } from "@plannotator/shared/reference-com
  * Per-session state that replaces closure-based state for multi-session support.
  * Each session gets its own plan data, decision promise, and configuration.
  */
+
+/**
+ * Result of a plan review decision (approve / deny).
+ * REQ-09: Decision promises are keyed by sessionId for independent resolution.
+ */
+export type DecisionResult = {
+  approved: boolean;
+  feedback?: string;
+  savedPath?: string;
+  agentSwitch?: string;
+  permissionMode?: string;
+};
+
 export interface SessionContext {
   sessionId: string;
   plan: string;
@@ -92,21 +105,8 @@ export interface SessionContext {
   initialArchivePlan: string;
   resolveDone: (() => void) | undefined;
 
-  // Plan review decision
-  resolveDecision: ((result: {
-    approved: boolean;
-    feedback?: string;
-    savedPath?: string;
-    agentSwitch?: string;
-    permissionMode?: string;
-  }) => void) | undefined;
-  decisionPromise: Promise<{
-    approved: boolean;
-    feedback?: string;
-    savedPath?: string;
-    agentSwitch?: string;
-    permissionMode?: string;
-  }>;
+  // Plan review decision (REQ-09: resolution is handled via decisionResolvers Map, keyed by sessionId)
+  decisionPromise: Promise<DecisionResult>;
 
   // Handler instances
   editorAnnotations: ReturnType<typeof createEditorAnnotationHandler> | null;
@@ -143,6 +143,9 @@ export function registerSessionContext(ctx: SessionContext): void {
  */
 export function unregisterSessionContext(sessionId: string): void {
   sessionRegistry.delete(sessionId);
+  // REQ-09: Clean up decision resolver for this session to prevent memory leaks and
+  // avoid dangling resolvers that could fire if resolveDecision is called after unregister.
+  decisionResolvers.delete(sessionId);
   console.log(`[plannotator] Unregistered session context: ${sessionId}`);
 }
 
@@ -241,6 +244,34 @@ const MAX_SESSIONS = (() => {
 })();
 
 /**
+ * REQ-09: Decision resolvers keyed by sessionId — enables independent concurrent resolutions.
+ * Each session's approve/deny is isolated; no cross-contamination between sessions.
+ */
+const decisionResolvers = new Map<string, (result: DecisionResult) => void>();
+
+/**
+ * REQ-09: Wait for a decision on a specific session.
+ * Registers the resolver in decisionResolvers so resolveDecision() can find it.
+ */
+function waitForDecision(sessionId: string): Promise<DecisionResult> {
+  return new Promise((resolve) => {
+    decisionResolvers.set(sessionId, resolve);
+  });
+}
+
+/**
+ * REQ-09: Resolve a specific session's decision promise.
+ * Only resolves the session identified by sessionId — other sessions are unaffected.
+ */
+function resolveDecision(sessionId: string, result: DecisionResult): void {
+  const resolver = decisionResolvers.get(sessionId);
+  if (resolver) {
+    resolver(result);
+    decisionResolvers.delete(sessionId);
+  }
+}
+
+/**
  * Start the Plannotator server
  *
  * Handles:
@@ -294,27 +325,13 @@ export async function startPlannotatorServer(
   // Lazy cache for in-session archive browsing (plan review sidebar tab)
   let cachedArchivePlans: ReturnType<typeof listArchivedPlans> | null = null;
 
-  // Plan-specific: repo info, version history, decision promise
+  // REQ-09: decisionPromise is obtained via waitForDecision(sessionId) — keyed by sessionId
+  let decisionPromise: Promise<DecisionResult>;
   let repoInfo: Awaited<ReturnType<typeof getRepoInfo>> | null = null;
   let project = "";
   let currentPlanPath = "";
   let previousPlan: string | null = null;
   let versionInfo = { version: 0, totalVersions: 0, project: "" };
-
-  let resolveDecision: ((result: {
-    approved: boolean;
-    feedback?: string;
-    savedPath?: string;
-    agentSwitch?: string;
-    permissionMode?: string;
-  }) => void) | undefined;
-  let decisionPromise: Promise<{
-    approved: boolean;
-    feedback?: string;
-    savedPath?: string;
-    agentSwitch?: string;
-    permissionMode?: string;
-  }>;
 
   if (mode !== "archive") {
     repoInfo = await getRepoInfo();
@@ -331,13 +348,11 @@ export async function startPlannotatorServer(
       totalVersions: getVersionCount(project, slug, sessionScope),
       project,
     };
-
-    decisionPromise = new Promise((resolve) => {
-      resolveDecision = resolve;
-    });
+    // REQ-09: Register this session's resolver so concurrent sessions don't interfere
+    decisionPromise = waitForDecision(sessionId);
   } else {
     // Never-resolving promise — archive mode uses waitForDone instead
-    decisionPromise = new Promise(() => {});
+    decisionPromise = new Promise<DecisionResult>(() => {});
   }
 
   // --- Concurrent session limit check ---
@@ -378,7 +393,6 @@ export async function startPlannotatorServer(
     archivePlans,
     initialArchivePlan,
     resolveDone,
-    resolveDecision,
     decisionPromise,
     editorAnnotations,
     externalAnnotations,
@@ -725,9 +739,9 @@ export async function startPlannotatorServer(
             // Clean up draft on successful submit
             deleteDraft(ctx.draftKey, approveScope);
 
-            // Use permission mode from client request if provided, otherwise fall back to hook input
             const effectivePermissionMode = requestedPermissionMode || ctx.permissionMode;
-            ctx.resolveDecision?.({ approved: true, feedback, savedPath, agentSwitch, permissionMode: effectivePermissionMode });
+            // REQ-09: Resolve via session-keyed map — ctx no longer holds resolveDecision
+            resolveDecision(ctx.sessionId, { approved: true, feedback, savedPath, agentSwitch, permissionMode: effectivePermissionMode });
             return Response.json({ ok: true, savedPath });
           }
 
@@ -761,7 +775,8 @@ export async function startPlannotatorServer(
             }
 
             deleteDraft(ctx.draftKey, denyScope);
-            ctx.resolveDecision?.({ approved: false, feedback, savedPath });
+            // REQ-09: Resolve via session-keyed map — ctx no longer holds resolveDecision
+            resolveDecision(ctx.sessionId, { approved: false, feedback, savedPath });
             return Response.json({ ok: true, savedPath });
           }
 
