@@ -119,7 +119,15 @@ export function useSharing(
   const clearShareLoadError = useCallback(() => setShareLoadError(''), []);
 
   // Load shared state from URL hash (or paste-service short URL)
-  const loadFromHash = useCallback(async () => {
+  // Guards existing local content — shared content is discarded if user already has a plan open
+  const loadFromHash = useCallback(async (localMarkdown: string, localAnnotations: Annotation[]) => {
+    // REQ-10: Local session takes precedence. If user already has content open,
+    // shared URL is silently ignored — they keep their local session.
+    if ((localMarkdown && localMarkdown.trim().length > 0) || localAnnotations.length > 0) {
+      setIsLoadingShared(false);
+      return false;
+    }
+
     try {
       // Check for short URL path pattern: /p/<id>
       const pathMatch = window.location.pathname.match(/^\/p\/([A-Za-z0-9]{6,16})$/);
@@ -219,21 +227,24 @@ export function useSharing(
     }
   }, [setMarkdown, setAnnotations, setGlobalAttachments, onSharedLoad, pasteApiUrl]);
 
-  // Load from hash on mount
+  // Load from hash on mount — pass current local state so shared is skipped if local exists
   useEffect(() => {
-    loadFromHash().finally(() => setIsLoadingShared(false));
-  }, []); // Only run on mount
+    loadFromHash(markdown, annotations).finally(() => setIsLoadingShared(false));
+  }, [markdown, annotations]); // Re-run if local content changes — guard re-evaluates
 
   // Listen for hash changes (when user pastes a new share URL)
   useEffect(() => {
     const handleHashChange = () => {
-      if (!looksLikeSharePayload(window.location.hash)) return;
+if (!looksLikeSharePayload(window.location.hash)) return;
       loadFromHash();
+if (window.location.hash.length > 1) {
+        loadFromHash(markdown, annotations);
+      }
     };
 
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, [loadFromHash]);
+  }, [loadFromHash, markdown, annotations]);
 
   // Generate share URL when markdown or annotations change
   const refreshShareUrl = useCallback(async () => {

@@ -289,7 +289,7 @@ export async function startPlannotatorServer(
   const { plan, origin, htmlContent, permissionMode, sharingEnabled = true, shareBaseUrl, pasteApiUrl, onReady, mode, customPlanPath, sessionId: optSessionId } = options;
 
   const sessionId = optSessionId ?? randomUUID();
-  console.log("[plannotator] sessionId:", sessionId);
+  console.log(`[plannotator] ${optSessionId ? "sessionId:" : "sessionId not provided, generated:"} ${sessionId}`);
 
   const { cwd: optCwd } = options;
   const cwd = optCwd ?? process.cwd();
