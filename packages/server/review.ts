@@ -10,6 +10,8 @@
  */
 
 import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
+import { isRemoteSession, getServerPort } from "./remote";
+import { getSessionContext } from "./index";
 import type { Origin } from "@plannotator/shared/agents";
 import { type DiffType, type GitContext, runVcsDiff, getVcsFileContentsForDiff, canStageFiles, stageFile, unstageFile, resolveVcsCwd, validateFilePath, getVcsContext, gitRuntime } from "./vcs";
 import { parseWorktreeDiffType, detectRemoteDefaultBranch, resolveBaseBranch } from "@plannotator/shared/review-core";
@@ -39,6 +41,24 @@ import { saveConfig, detectGitUser, getServerConfig } from "./config";
 import { type PRMetadata, type PRReviewFileComment, fetchPRFileContent, fetchPRContext, submitPRReview, fetchPRViewedFiles, markPRFilesViewed, getPRUser, prRefFromMetadata, getDisplayRepo, getMRLabel, getMRNumberLabel } from "./pr";
 import { createAIEndpoints, ProviderRegistry, SessionManager, createProvider, type AIEndpoints, type PiSDKConfig } from "@plannotator/ai";
 import { isWSL } from "./browser";
+
+/**
+ * Regex to extract sessionId from URL path: /s/<sessionId>/api/...
+ */
+const SESSION_PATH_REGEX = /^\/s\/([^/]+)(\/api\/.*)$/;
+
+/**
+ * Parse a URL pathname to extract optional sessionId and the remaining API path.
+ * Returns { sessionId, apiPath } if the path matches /s/<id>/api/...,
+ * or { sessionId: null, apiPath } for flat /api/... paths.
+ */
+function parseSessionPath(pathname: string): { sessionId: string | null; apiPath: string } {
+  const match = SESSION_PATH_REGEX.exec(pathname);
+  if (match) {
+    return { sessionId: match[1], apiPath: match[2] };
+  }
+  return { sessionId: null, apiPath: pathname };
+}
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
@@ -86,6 +106,8 @@ export interface ReviewServerOptions {
   agentCwd?: string;
   /** Cleanup callback invoked when server stops (e.g., remove temp worktree) */
   onCleanup?: () => void | Promise<void>;
+  /** Session ID for multi-session routing (REQ-06) */
+  sessionId?: string;
 }
 
 export interface ReviewServerResult {
@@ -95,6 +117,8 @@ export interface ReviewServerResult {
   url: string;
   /** Whether running in remote mode */
   isRemote: boolean;
+  /** The session ID for this server instance */
+  sessionId: string;
   /** Wait for user review decision */
   waitForDecision: () => Promise<{
     approved: boolean;
@@ -123,7 +147,7 @@ const RETRY_DELAY_MS = 500;
 export async function startReviewServer(
   options: ReviewServerOptions
 ): Promise<ReviewServerResult> {
-  const { htmlContent, origin, gitContext, sharingEnabled = true, shareBaseUrl, onReady, prMetadata } = options;
+  const { htmlContent, origin, gitContext, sharingEnabled = true, shareBaseUrl, onReady, prMetadata, sessionId } = options;
 
   const isPRMode = !!prMetadata;
   const hasLocalAccess = !!gitContext;
@@ -426,7 +450,34 @@ export async function startReviewServer(
         async fetch(req, server) {
           const url = new URL(req.url);
 
-          // API: Get tour result
+
+// REQ-06: Support /s/<sessionId>/api/... routing
+          const parsed = parseSessionPath(url.pathname);
+          const { sessionId: parsedSessionId, apiPath } = parsed;
+
+          // When sessionId is in the URL path, verify it exists in the registry
+          if (parsedSessionId) {
+            const ctx = getSessionContext(parsedSessionId);
+            if (!ctx) {
+              return Response.json(
+                { error: "Session not found", sessionId: parsedSessionId },
+                { status: 404 },
+              );
+            }
+          }
+
+          // REQ-06: Guard against session mismatch when server has a fixed sessionId
+          if (sessionId && parsedSessionId && parsedSessionId !== sessionId) {
+            return Response.json(
+              {
+                error: "Session mismatch",
+                message: `URL session "${parsedSessionId}" does not match expected "${sessionId}"`,
+              },
+              { status: 403 },
+            );
+          }
+
+// API: Get tour result
           if (url.pathname.match(/^\/api\/tour\/[^/]+$/) && req.method === "GET") {
             const jobId = url.pathname.slice("/api/tour/".length);
             const result = tour.getTour(jobId);
@@ -446,9 +497,8 @@ export async function startReviewServer(
               return Response.json({ error: "Invalid JSON" }, { status: 400 });
             }
           }
-
           // API: Get diff content
-          if (url.pathname === "/api/diff" && req.method === "GET") {
+          if (apiPath === "/api/diff" && req.method === "GET") {
             return Response.json({
               rawPatch: currentPatch,
               gitRef: currentGitRef,
@@ -472,7 +522,7 @@ export async function startReviewServer(
           }
 
           // API: Switch diff type (requires local file access)
-          if (url.pathname === "/api/diff/switch" && req.method === "POST") {
+          if (apiPath === "/api/diff/switch" && req.method === "POST") {
             if (!hasLocalAccess) {
               return Response.json(
                 { error: "Not available without local file access" },
@@ -544,7 +594,7 @@ export async function startReviewServer(
           }
 
           // API: Fetch PR context (comments, checks, merge status) — PR mode only
-          if (url.pathname === "/api/pr-context" && req.method === "GET") {
+          if (apiPath === "/api/pr-context" && req.method === "GET") {
             if (!isPRMode) {
               return Response.json(
                 { error: "Not in PR mode" },
@@ -562,7 +612,7 @@ export async function startReviewServer(
           }
 
           // API: Get file content for expandable diff context
-          if (url.pathname === "/api/file-content" && req.method === "GET") {
+          if (apiPath === "/api/file-content" && req.method === "GET") {
             const filePath = url.searchParams.get("path");
             if (!filePath) {
               return Response.json({ error: "Missing path" }, { status: 400 });
@@ -611,7 +661,7 @@ export async function startReviewServer(
           }
 
           // API: Stage / unstage a file (disabled when VCS doesn't support it)
-          if (url.pathname === "/api/git-add" && req.method === "POST") {
+          if (apiPath === "/api/git-add" && req.method === "POST") {
             if (isPRMode || !canStageFiles(currentDiffType)) {
               return Response.json(
                 { error: "Staging not available" },
@@ -640,7 +690,7 @@ export async function startReviewServer(
           }
 
           // API: Update user config (write-back to ~/.plannotator/config.json)
-          if (url.pathname === "/api/config" && req.method === "POST") {
+          if (apiPath === "/api/config" && req.method === "POST") {
             try {
               const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
               const toSave: Record<string, unknown> = {};
@@ -656,22 +706,22 @@ export async function startReviewServer(
           }
 
           // API: Serve images (local paths or temp uploads)
-          if (url.pathname === "/api/image") {
+          if (apiPath === "/api/image") {
             return handleImage(req);
           }
 
           // API: Upload image -> save to temp -> return path
-          if (url.pathname === "/api/upload" && req.method === "POST") {
+          if (apiPath === "/api/upload" && req.method === "POST") {
             return handleUpload(req);
           }
 
           // API: Get available agents (OpenCode only)
-          if (url.pathname === "/api/agents") {
+          if (apiPath === "/api/agents") {
             return handleAgents(options.opencodeClient);
           }
 
           // API: Annotation draft persistence
-          if (url.pathname === "/api/draft") {
+          if (apiPath === "/api/draft") {
             if (req.method === "POST") return handleDraftSave(req, draftKey);
             if (req.method === "DELETE") return handleDraftDelete(draftKey);
             return handleDraftLoad(draftKey);
@@ -694,14 +744,14 @@ export async function startReviewServer(
           if (agentResponse) return agentResponse;
 
           // API: Exit review session without feedback
-          if (url.pathname === "/api/exit" && req.method === "POST") {
+          if (apiPath === "/api/exit" && req.method === "POST") {
             deleteDraft(draftKey);
             resolveDecision({ approved: false, feedback: "", annotations: [], exit: true });
             return Response.json({ ok: true });
           }
 
           // API: Submit review feedback
-          if (url.pathname === "/api/feedback" && req.method === "POST") {
+          if (apiPath === "/api/feedback" && req.method === "POST") {
             try {
               const body = (await req.json()) as {
                 approved?: boolean;
@@ -727,7 +777,7 @@ export async function startReviewServer(
           }
 
           // API: Submit PR review directly to GitHub (PR mode only)
-          if (url.pathname === "/api/pr-action" && req.method === "POST") {
+          if (apiPath === "/api/pr-action" && req.method === "POST") {
             if (!isPRMode || !prMetadata) {
               return Response.json({ error: "Not in PR mode" }, { status: 400 });
             }
@@ -759,7 +809,7 @@ export async function startReviewServer(
           }
 
           // API: Mark/unmark PR files as viewed on GitHub (PR mode, GitHub only)
-          if (url.pathname === "/api/pr-viewed" && req.method === "POST") {
+          if (apiPath === "/api/pr-viewed" && req.method === "POST") {
             if (!isPRMode || !prMetadata) {
               return Response.json({ error: "Not in PR mode" }, { status: 400 });
             }
@@ -786,14 +836,14 @@ export async function startReviewServer(
           }
 
           // AI endpoints
-          if (aiEndpoints && url.pathname.startsWith("/api/ai/")) {
-            const handler = aiEndpoints[url.pathname as keyof AIEndpoints];
+          if (aiEndpoints && apiPath.startsWith("/api/ai/")) {
+            const handler = aiEndpoints[apiPath as keyof AIEndpoints];
             if (handler) return handler(req);
             return Response.json({ error: "Not found" }, { status: 404 });
           }
 
           // Favicon
-          if (url.pathname === "/favicon.svg") return handleFavicon();
+          if (apiPath === "/favicon.svg") return handleFavicon();
 
           // Serve embedded HTML for all other routes (SPA)
           return new Response(htmlContent, {
@@ -847,6 +897,7 @@ export async function startReviewServer(
     port,
     url: serverUrl,
     isRemote,
+    sessionId: sessionId ?? "review",
     waitForDecision: () => decisionPromise,
     stop: () => {
       process.removeListener("exit", exitHandler);

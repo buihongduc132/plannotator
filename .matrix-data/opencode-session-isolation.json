@@ -131,7 +131,9 @@
         "parseSessionPath": "EXISTS at index.ts:156-162 — extracts sessionId and apiPath from URL",
         "apiPath_routing": "EXISTS at index.ts:387 — apiPath used for all route matching instead of url.pathname",
         "404_when_not_found": "EXISTS at index.ts:367-378 — proper 404 with error body when session not found",
-        "backward_compat": "Flat /api/* paths still work via closure fallback — no consumer changes needed"
+        "backward_compat": "Flat /api/* paths still work via closure fallback — no consumer changes needed",
+        "annotate_ts_compliant": "EXISTS at annotate.ts:133 — SESSION_PATH_REGEX + parseAnnotateSessionPath(); all routes use apiPath at lines 159-174",
+        "review_ts_compliant": "EXISTS at review.ts:44 — SESSION_PATH_REGEX; review.ts:51 — parseSessionPath(); review.ts:380 — parseSessionPath() called in fetch handler; review.ts:406-715 — ALL routes migrated to apiPath ===; review.ts:384-391 — 404 when session not found; review.ts:394-403 — 403 session mismatch guard"
       },
       "intention": "to structure the url so that it can support multiple session / plans running at the same time — support multiple session / plans running at the same time. URL path carries sessionId so any client (CLI, REST) can target a specific session by ID.",
       "user_words": "to structure the url so that it can support multiple session / plans running at the same time — support multiple session / plans running at the same time",
