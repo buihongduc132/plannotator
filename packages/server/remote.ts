@@ -66,9 +66,20 @@ export function getServerPort(): number {
 }
 
 /**
- * Bind local sessions to loopback, but keep remote sessions reachable via the
+* Bind local sessions to loopback, but keep remote sessions reachable via the
  * container or host network interface for SSH/devcontainer/Docker forwarding.
  */
 export function getServerHostname(): string {
   return isRemoteSession() ? "0.0.0.0" : LOOPBACK_HOST;
+* Get the server hostname to bind to.
+ *
+ * Remote: binds to 0.0.0.0 so any machine on the network can reach it.
+ * Local:  binds to localhost (127.0.0.1) so only this machine can access it.
+ *
+ * Override with PLANNOTATOR_HOST env var.
+ */
+export function getServerHost(): string {
+  const host = process.env.PLANNOTATOR_HOST;
+  if (host) return host;
+  return isRemoteSession() ? "0.0.0.0" : "127.0.0.1";
 }

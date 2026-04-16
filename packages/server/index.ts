@@ -16,6 +16,7 @@ import type { Origin } from "@plannotator/shared/agents";
 import { randomUUID } from "crypto";
 import { resolve } from "path";
 import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
+import { isRemoteSession, getServerPort, getServerHost } from "./remote";
 import { openEditorDiff } from "./ide";
 import {
   saveToObsidian,
@@ -52,7 +53,7 @@ import { createExternalAnnotationHandler } from "./external-annotations";
 import { isWSL } from "./browser";
 
 // Re-export utilities
-export { isRemoteSession, getServerPort } from "./remote";
+export { isRemoteSession, getServerPort, getServerHost } from "./remote";
 export { openBrowser } from "./browser";
 export * from "./integrations";
 export * from "./storage";
@@ -406,9 +407,11 @@ export async function startPlannotatorServer(
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
+      const configuredHost = getServerHost();
       server = Bun.serve({
         hostname: getServerHostname(),
         port: configuredPort,
+        hostname: configuredHost,
 
         async fetch(req, server) {
           const url = new URL(req.url);
