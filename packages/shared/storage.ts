@@ -38,12 +38,29 @@ export interface SessionScope {
 }
 
 /**
+ * Sanitize a sessionId for safe use as a filesystem path component.
+ * - Replace / with _ (no directory separators)
+ * - Replace .. with _ (no path traversal)
+ * - Strip non-word characters
+ * - Fallback to first 8 chars of uuid (safe hex) for empty results
+ */
+function sanitizeSessionId(sessionId: string): string {
+  const sanitized = sessionId
+    .replace(/\//g, "_")
+    .replace(/\.\./g, "_")
+    .replace(/[^\w-]/g, "")
+    .trim();
+  return sanitized || sessionId.replace(/-/g, "").slice(0, 8);
+}
+
+/**
  * Build a scoped sub-path from cwd + sessionId.
  * Returns an empty string if either is missing (backward compat).
+ * sessionId is sanitized to prevent path traversal attacks.
  */
 function scopePath(scope?: SessionScope): string {
   if (!scope?.cwd || !scope?.sessionId) return "";
-  return join(sanitizeCwd(scope.cwd), scope.sessionId);
+  return join(sanitizeCwd(scope.cwd), sanitizeSessionId(scope.sessionId));
 }
 
 /**

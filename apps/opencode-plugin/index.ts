@@ -429,19 +429,25 @@ Do NOT proceed with implementation until your plan is approved.`);
     },
   };
 
-  if (shouldRegisterSubmitPlan(workflowOptions)) {
+if (shouldRegisterSubmitPlan(workflowOptions)) {
     plugin.tool = {
       submit_plan: tool({
+tool: {
+submit_plan: tool({
         description:
-          "Planning tool used to submit a plan to the user for review. Before calling this tool you must conduct interactive and exploratory analysis in order to submit a quality plan. Ask questions. Explore the codebase for context if needed. Only call submit_plan once you have enough details to create a quality plan. Work with the user to get those details. Pass either markdown text or an absolute path to a .md file.",
+          "Planning tool used to submit a plan to the user for review. Before calling this tool you must conduct interactive and exploratory analysis in order to submit a quality plan. Ask questions. Explore the codebase for context if needed. Only call submit_plan once you have enough details to create a quality plan. Work with the user to get those details. Pass either markdown text or an absolute path to a .md file. Use use_latest_message: true to submit the latest assistant message from the current session as the plan.",
         args: {
           plan: tool.schema
             .string()
-            .describe("The plan — either markdown text or an absolute path to a .md file on disk."),
+            .describe("The plan — either markdown text or an absolute path to a .md file. Ignored when use_latest_message is true."),
+          use_latest_message: tool.schema
+            .boolean()
+            .describe("When true, extract the latest assistant message from the current OpenCode session and use it as the plan. The plan argument is ignored.")
+            .default(false),
         },
 
         async execute(args, context) {
-          const invokingAgent = (context as { agent?: string }).agent;
+const invokingAgent = (context as { agent?: string }).agent;
           if (shouldRejectSubmitPlanForAgent(invokingAgent, workflowOptions)) {
             return `Plannotator is configured for plan-agent mode. submit_plan can only be called by: ${workflowOptions.planningAgents.join(", ")}.
 
@@ -449,14 +455,50 @@ Use /plannotator-last or /plannotator-annotate for manual review, or set workflo
           }
 
           // Auto-detect: file path or plan text
+// REQ-NEW: use_latest_message — extract latest assistant message as plan
           let planContent: string;
           let sourceFilePath: string | undefined;
-          try {
-            const resolved = resolvePlanContent(args.plan);
-            planContent = resolved.content;
-            sourceFilePath = resolved.filePath;
-          } catch (err) {
-            return `Error: ${err instanceof Error ? err.message : String(err)}`;
+          if (args.use_latest_message) {
+            let messages: any[] | undefined;
+            try {
+              const response = await ctx.client.session.messages({
+                path: { id: context.sessionID },
+              });
+              messages = response.data;
+            } catch {
+              return "Error: Could not fetch session messages. Ensure OpenCode session is active.";
+            }
+
+            // Walk backward — find last assistant message with text parts
+            let lastAssistantText: string | null = null;
+            if (messages) {
+              for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i];
+                if (msg.info?.role === "assistant") {
+                  const textParts = (msg.parts ?? [])
+                    .filter((p: any) => p.type === "text" && p.text?.trim())
+                    .map((p: any) => p.text as string);
+                  if (textParts.length > 0) {
+                    lastAssistantText = textParts.join("\n");
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (!lastAssistantText) {
+              return "Error: The latest assistant message has no text content to submit as a plan. Write your plan and pass it as the plan argument, or try again once the assistant has responded with text.";
+            }
+            planContent = lastAssistantText;
+          } else {
+            // Auto-detect: file path or plan text
+            try {
+              const resolved = resolvePlanContent(args.plan ?? "");
+              planContent = resolved.content;
+              sourceFilePath = resolved.filePath;
+            } catch (err) {
+              return `Error: ${err instanceof Error ? err.message : String(err)}`;
+            }
           }
 
           if (!planContent.trim()) {

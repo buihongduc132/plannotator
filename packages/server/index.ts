@@ -134,8 +134,16 @@ const sessionRegistry = new Map<string, SessionContext>();
 
 /**
  * Register a session in the global registry.
+ * Throws if a session with the same ID is already active (prevents overwriting).
  */
 export function registerSessionContext(ctx: SessionContext): void {
+  if (sessionRegistry.has(ctx.sessionId)) {
+    const existing = sessionRegistry.get(ctx.sessionId)!;
+    throw new Error(
+      `Session "${ctx.sessionId}" is already active (origin: ${existing.origin}, cwd: ${existing.cwd}). ` +
+      `Use --session-id to target a specific session, or close the existing session first.`
+    );
+  }
   sessionRegistry.set(ctx.sessionId, ctx);
   console.log(`[plannotator] Registered session context: ${ctx.sessionId}`);
 }
@@ -951,8 +959,8 @@ export async function startPlannotatorServer(
     },
     ...(donePromise && { waitForDone: () => donePromise }),
     stop: () => {
+      try { server.stop(); } catch (err) { console.error(`[plannotator] server.stop() failed for session ${sessionId}:`, err); }
       unregisterSessionContext(sessionId);
-      server.stop();
     },
   };
 }
