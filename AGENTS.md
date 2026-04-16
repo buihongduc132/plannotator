@@ -100,6 +100,8 @@ claude --plugin-dir ./apps/hook
 |----------|-------------|
 | `PLANNOTATOR_REMOTE` | Set to `1` / `true` for remote mode, `0` / `false` for local mode, or leave unset for SSH auto-detection. Uses a fixed port in remote mode; browser-opening behavior depends on the environment. |
 | `PLANNOTATOR_PORT` | Fixed port to use. Default: random locally, `19432` for remote sessions. |
+| `PLANNOTATOR_SERVER_URL` | Full base URL for the plannotator server (e.g. `http://100.114.135.99:19437`). When set, the OpenCode plugin enters **client mode** — it connects to the running server via HTTP instead of spawning its own server. The server must be running in **plan mode** (e.g., `plannotator archive` exposes the full plan server with `/api/sessions`; `plannotator annotate` and `plannotator review` do not). |
+| `PLANNOTATOR_CLIENT_MODE` | Set to `1` to force client mode (plugin connects to running server). Set to `0` to force spawn mode (plugin starts its own server). When unset, auto-detected: if `PLANNOTATOR_SERVER_URL` is set → client mode, otherwise → spawn mode. |
 | `PLANNOTATOR_BROWSER` | Custom browser to open plans in. macOS: app name or path. Linux/Windows: executable path. |
 | `PLANNOTATOR_SHARE` | Set to `disabled` to turn off URL sharing entirely. Default: enabled. |
 | `PLANNOTATOR_SHARE_URL` | Custom base URL for share links (self-hosted portal). Default: `https://share.plannotator.ai`. |
@@ -474,6 +476,29 @@ bun run --cwd apps/review build && bun run build:hook && \
 ```
 
 Running only `build:opencode` will copy stale HTML files.
+
+## Local Development with mise
+
+For OpenCode plugin development, a single `mise run opencode-dev` handles everything:
+
+```bash
+mise run opencode-dev
+```
+
+This:
+1. Builds `apps/opencode-plugin/` (copies HTML, bundles `dist/index.js`)
+2. Creates a global npm link for `@plannotator/opencode`
+3. Symlinks it into OpenCode's own `node_modules/@plannotator/opencode`
+
+After running `mise run opencode-dev`, simply restart OpenCode to pick up changes. No need to re-run the task after code changes — just rebuild via `mise run opencode-dev` again when you want to deploy the latest changes.
+
+The following environment variables are set automatically by the task:
+
+| Variable | Value |
+|---|---|
+| `PLANNOTATOR_REMOTE` | `1` |
+| `PLANNOTATOR_PORT` | `19437` |
+| `PLANNOTATOR_SERVER_URL` | `http://100.114.135.99:19437` |
 
 ## Marketing Site
 

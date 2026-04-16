@@ -40,7 +40,10 @@ if (_proto?.constructor && _proto.constructor !== Response && _proto.constructor
 import {
   startPlannotatorServer,
   handleServerReady,
+  isClientMode,
+  getServerUrl,
 } from "@plannotator/server";
+import { openBrowser } from "@plannotator/server/browser";
 import {
   startReviewServer,
   handleReviewServerReady,
@@ -506,7 +509,7 @@ Use /plannotator-last or /plannotator-annotate for manual review, or set workflo
           }
 
           const sharingEnabled = await getSharingEnabled();
-          const server = await startPlannotatorServer({
+const server = await startPlannotatorServer({
             plan: planContent,
             origin: "opencode",
             sharingEnabled,
@@ -520,29 +523,148 @@ Use /plannotator-last or /plannotator-annotate for manual review, or set workflo
               handleServerReady(url, isRemote, port);
             },
           });
-
           const timeoutSeconds = getPlanTimeoutSeconds();
           const timeoutMs = timeoutSeconds === null ? null : timeoutSeconds * 1000;
 
-          const result = timeoutMs === null
-            ? await server.waitForDecision()
-            : await new Promise<Awaited<ReturnType<typeof server.waitForDecision>>>((resolve) => {
-                const timeoutId = setTimeout(
-                  () =>
-                    resolve({
-                      approved: false,
-                      feedback: `[Plannotator] No response within ${timeoutSeconds} seconds. Port released automatically. Please call submit_plan again.`,
-                    }),
-                  timeoutMs
-                );
+          let result: { approved: boolean; feedback?: string; savedPath?: string; agentSwitch?: string; permissionMode?: string };
 
-                server.waitForDecision().then((r) => {
-                  clearTimeout(timeoutId);
-                  resolve(r);
-                });
+          if (isClientMode()) {
+            // ── Client mode: connect to running CLI server via HTTP ──────────
+            const serverBaseUrl = getServerUrl(0); // 0 = ignored when SERVER_URL is set
+            let sessionId: string;
+            let sessionUrl: string;
+
+            try {
+              // Register a new plan session with the running server
+              const createRes = await fetch(`${serverBaseUrl}/api/sessions`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  plan: planContent,
+                  mode: "plan",
+                  cwd: ctx.directory,
+                }),
               });
-          await Bun.sleep(1500);
-          server.stop();
+
+              if (!createRes.ok) {
+                const err = await createRes.json().catch(() => ({ error: createRes.statusText }));
+                return `Error: Could not connect to plannotator server (${createRes.status}): ${err.error ?? createRes.statusText}. Is the server running?`;
+              }
+
+              const created = await createRes.json();
+              sessionId = created.sessionId;
+              sessionUrl = created.url;
+            } catch (err) {
+              return `Error: Could not reach plannotator server at ${serverBaseUrl}. Make sure the server is running (e.g. \`plannotator serve\` or a long-running CLI command).`;
+            }
+
+            // Open the review UI in the browser
+            await openBrowser(sessionUrl, { isRemote: true });
+
+            // Poll for decision (with optional timeout)
+            const pollUntil = timeoutMs ? Date.now() + timeoutMs : 0;
+            let settled = false;
+
+            result = await new Promise<typeof result>((resolve) => {
+              // Try SSE first (real-time, no polling)
+              let eventSource: EventSource | null = null;
+              let eventSourceClosed = false;
+
+              const sseUrl = `${sessionUrl}/api/decision/stream`;
+              try {
+                eventSource = new EventSource(sseUrl);
+              } catch {
+                eventSource = null;
+              }
+
+              const cleanup = () => {
+                settled = true;
+                eventSource?.close();
+              };
+
+              if (eventSource) {
+                eventSource.addEventListener("connected", () => {
+                  // SSE connected, waiting for user decision...
+                });
+
+                eventSource.addEventListener("decision", (e: MessageEvent) => {
+                  cleanup();
+                  resolve(JSON.parse(e.data));
+                });
+
+                eventSource.addEventListener("error", () => {
+                  if (!eventSourceClosed) {
+                    eventSourceClosed = true;
+                    eventSource?.close();
+                    // Fall back to polling
+                    startPolling();
+                  }
+                });
+              }
+
+              const startPolling = () => {
+                const poll = async () => {
+                  if (settled) return;
+                  if (pollUntil && Date.now() > pollUntil) {
+                    cleanup();
+                    resolve({ approved: false, feedback: `[Plannotator] No response within ${timeoutSeconds} seconds. Please call submit_plan again.` });
+                    return;
+                  }
+                  try {
+                    const res = await fetch(`${sessionUrl}/api/decision`);
+                    if (res.ok) {
+                      const data = await res.json();
+                      if (!data.pending) {
+                        cleanup();
+                        resolve({ approved: data.approved, feedback: data.feedback, savedPath: data.savedPath, agentSwitch: data.agentSwitch, permissionMode: data.permissionMode });
+                        return;
+                      }
+                    }
+                  } catch { /* ignore poll errors */ }
+                  if (!settled) setTimeout(poll, 1000);
+                };
+                poll();
+              };
+
+              // If SSE failed to connect, start polling immediately
+              if (!eventSource) startPolling();
+            });
+          } else {
+            // ── Spawn mode: start own server (original behavior) ─────────────
+            const server = await startPlannotatorServer({
+              plan: planContent,
+              origin: "opencode",
+              sharingEnabled,
+              shareBaseUrl: getShareBaseUrl(),
+              htmlContent: getPlanHtml(),
+              opencodeClient: ctx.client,
+              sessionId: context.sessionID,
+              cwd: ctx.directory,
+              onReady: async (url, isRemote, port) => {
+                handleServerReady(url, isRemote, port);
+              },
+            });
+
+            result = timeoutMs === null
+              ? await server.waitForDecision(context.sessionID)
+              : await new Promise<typeof result>((resolve) => {
+                  const timeoutId = setTimeout(
+                    () =>
+                      resolve({
+                        approved: false,
+                        feedback: `[Plannotator] No response within ${timeoutSeconds} seconds. Port released automatically. Please call submit_plan again.`,
+                      }),
+                    timeoutMs
+                  );
+
+                  server.waitForDecision(context.sessionID).then((r) => {
+                    clearTimeout(timeoutId);
+                    resolve(r);
+                  });
+                });
+            await Bun.sleep(1500);
+            server.stop();
+          }
 
           if (result.approved) {
             const shouldSwitchAgent = result.agentSwitch && result.agentSwitch !== 'disabled';

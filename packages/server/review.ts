@@ -438,14 +438,22 @@ export async function startReviewServer(
     resolveDecision = resolve;
   });
 
+  // Capture configured port so retries can fall back to dynamic allocation
+  const configuredPortValue = configuredPort;
+
   // Start server with retry logic
   let server: ReturnType<typeof Bun.serve> | null = null;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    // After the first EADDRINUSE, fall back to a dynamic port so multiple servers
+    // can coexist (PLANNOTATOR_PORT defines the *preferred* port, not a hard requirement)
+    const port = attempt === 1 ? configuredPortValue : 0;
+
     try {
       server = Bun.serve({
-        hostname: getServerHostname(),
+hostname: getServerHostname(),
         port: configuredPort,
+port,
 
         async fetch(req, server) {
           const url = new URL(req.url);
@@ -862,19 +870,21 @@ export async function startReviewServer(
 
       break; // Success, exit retry loop
     } catch (err: unknown) {
-      const isAddressInUse =
-        err instanceof Error && err.message.includes("EADDRINUSE");
+      // Bun surfaces EADDRINUSE as "Failed to start server. Is port X in use?" — match
+      // that message text since err.code may be undefined in bundled builds.
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const errCode = (err as { code?: unknown }).code;
+      const hasEADDRINUSE =
+        errMsg.toLowerCase().includes("in use") ||
+        errCode === "EADDRINUSE";
 
-      if (isAddressInUse && attempt < MAX_RETRIES) {
+      if (hasEADDRINUSE && attempt < MAX_RETRIES) {
         await Bun.sleep(RETRY_DELAY_MS);
         continue;
       }
 
-      if (isAddressInUse) {
-        const hint = isRemote ? " (set PLANNOTATOR_PORT to use different port)" : "";
-        throw new Error(`Port ${configuredPort} in use after ${MAX_RETRIES} retries${hint}`);
-      }
-
+      // Retry exhausted with EADDRINUSE (should not normally happen since we fall back
+      // to port 0 on retry), or a completely unrelated error — propagate it.
       throw err;
     }
   }

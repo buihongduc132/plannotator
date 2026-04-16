@@ -30,6 +30,21 @@ function getRemoteOverride(): boolean | null {
 }
 
 /**
+ * Check if running in client mode — the plugin acts as an HTTP client
+ * that connects to a running server instead of spawning its own.
+ *
+ * PLANNOTATOR_CLIENT_MODE=1 → true (plugin connects to server via HTTP)
+ * PLANNOTATOR_SERVER_URL is set + PLANNOTATOR_CLIENT_MODE unset → true (auto-detect)
+ */
+export function isClientMode(): boolean {
+  const mode = process.env.PLANNOTATOR_CLIENT_MODE;
+  if (mode === "1" || mode?.toLowerCase() === "true") return true;
+  if (mode === "0" || mode?.toLowerCase() === "false") return false;
+  // Auto-detect: server URL is set → assume client mode (plugin connects to server)
+  return !!process.env.PLANNOTATOR_SERVER_URL;
+}
+
+/**
  * Check if running in a remote session (SSH, devcontainer, etc.)
  */
 export function isRemoteSession(): boolean {
