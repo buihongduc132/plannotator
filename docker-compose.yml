@@ -1,0 +1,79 @@
+name: plannotator-multi-session-test
+
+# Multi-session smoke test for feat/multiple-session branch
+# Tests: concurrent sessions, session isolation, URL routing, session limit
+#
+# Usage:
+#   docker compose --profile test up --abort-on-container-exit
+#   docker compose up --detach --profile test
+#   docker compose logs plannotator
+#   docker compose exec plannotator cat /tmp/smoke-results.json
+#
+# What gets tested:
+#   1. Session A starts — /s/<sessionA>/api/* routes work
+#   2. Session B starts — concurrent session works
+#   3. Session C starts — reaches limit (MAX=2 in test), gets SESSION_LIMIT_REACHED error
+#   4. Session A /api/session returns its own sessionId
+#   5. Session B /api/session returns different sessionId
+#   6. Session A cannot access Session B's context via wrong URL path
+#   7. Decision promise per session — no cross-contamination
+#   8. Sessions shutdown cleanly
+
+services:
+  plannotator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: plannotator:test
+    container_name: plannotator-test
+    hostname: plannotator-test
+    # Mount source for live testing (no rebuild needed)
+    volumes:
+      - .:/app
+    environment:
+      # Force local mode (random port each start)
+      PLANNOTATOR_REMOTE: "0"
+      # Override concurrent session limit for testing (default 10)
+      PLANNOTATOR_MAX_SESSIONS: "2"
+      # Shared storage so sessions can see each other
+      HOME: /app/home
+    # Capture output
+    init: true
+    profiles:
+      - test
+    command: >
+      sh -c "
+        bun install --no-optional 2>/dev/null || bun install &&
+        bun run test-multi-session.ts
+      "
+
+  # Interactive shells for manual testing of two concurrent sessions
+  shell-a:
+    image: plannotator:test
+    container_name: plannotator-session-a
+    hostname: plannotator-session-a
+    volumes:
+      - .:/app
+    environment:
+      PLANNOTATOR_REMOTE: "0"
+      PLANNOTATOR_MAX_SESSIONS: "10"
+      HOME: /app/home
+    init: true
+    profiles:
+      - interactive
+    command: ["bun", "run", "apps/hook/server/index.ts", "--help"]
+
+  shell-b:
+    image: plannotator:test
+    container_name: plannotator-session-b
+    hostname: plannotator-session-b
+    volumes:
+      - .:/app
+    environment:
+      PLANNOTATOR_REMOTE: "0"
+      PLANNOTATOR_MAX_SESSIONS: "10"
+      HOME: /app/home
+    init: true
+    profiles:
+      - interactive
+    command: ["bun", "run", "apps/hook/server/index.ts", "--help"]

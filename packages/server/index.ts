@@ -488,7 +488,10 @@ export async function startPlannotatorServer(
           }
 
           // API: Close archive browser (archive mode only)
-          if (apiPath === "/api/done" && req.method === "POST") {
+          if (
+            (apiPath === "/api/done" || apiPath.startsWith("/s/") && apiPath.endsWith("/api/done")) &&
+            req.method === "POST"
+          ) {
             ctx.resolveDone?.();
             return Response.json({ ok: true });
           }
@@ -662,7 +665,10 @@ export async function startPlannotatorServer(
           }
 
           // API: Approve plan
-          if (apiPath === "/api/approve" && req.method === "POST") {
+          if (
+            (apiPath === "/api/approve" || (apiPath.startsWith("/s/") && apiPath.endsWith("/api/approve"))) &&
+            req.method === "POST"
+          ) {
             // Check for note integrations and optional feedback
             let feedback: string | undefined;
             let agentSwitch: string | undefined;
@@ -746,7 +752,10 @@ export async function startPlannotatorServer(
           }
 
           // API: Deny with feedback
-          if (apiPath === "/api/deny" && req.method === "POST") {
+          if (
+            (apiPath === "/api/deny" || (apiPath.startsWith("/s/") && apiPath.endsWith("/api/deny"))) &&
+            req.method === "POST"
+          ) {
             let feedback = "Plan rejected by user";
             let planSaveEnabled = true; // default to enabled for backwards compat
             let planSaveCustomPath: string | undefined;
@@ -782,6 +791,15 @@ export async function startPlannotatorServer(
 
           // Favicon
           if (url.pathname === "/favicon.svg") return handleFavicon();
+
+          // API: Exit / close session (archive mode — signals waitForDone)
+          if (
+            (apiPath === "/api/exit" || apiPath.startsWith("/s/") && apiPath.endsWith("/api/exit")) &&
+            req.method === "POST"
+          ) {
+            ctx.resolveDone?.();
+            return Response.json({ ok: true });
+          }
 
           // Serve embedded HTML for all other routes (SPA)
           return new Response(htmlContent, {
