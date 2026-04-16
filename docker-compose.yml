@@ -74,6 +74,9 @@ services:
       PLANNOTATOR_MAX_SESSIONS: "10"
       # Optional: override host binding (default: 0.0.0.0 in remote mode)
       # PLANNOTATOR_HOST: "0.0.0.0"
+      # External base URL — used for session URLs in browser + share links
+      # Replace 192.168.1.161 with the host machine's actual LAN IP
+      PLANNOTATOR_SERVER_URL: "http://192.168.1.161:19432"
       HOME: /app/home
     init: true
     profiles:

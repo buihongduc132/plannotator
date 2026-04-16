@@ -17,6 +17,7 @@ import { randomUUID } from "crypto";
 import { resolve } from "path";
 import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
 import { isRemoteSession, getServerPort, getServerHost } from "./remote";
+import { isRemoteSession, getServerPort, getServerHost, getServerUrl } from "./remote";
 import { openEditorDiff } from "./ide";
 import {
   saveToObsidian,
@@ -53,7 +54,7 @@ import { createExternalAnnotationHandler } from "./external-annotations";
 import { isWSL } from "./browser";
 
 // Re-export utilities
-export { isRemoteSession, getServerPort, getServerHost } from "./remote";
+export { isRemoteSession, getServerPort, getServerHost, getServerUrl } from "./remote";
 export { openBrowser } from "./browser";
 export * from "./integrations";
 export * from "./storage";
@@ -87,7 +88,7 @@ export interface SessionContext {
   sharingEnabled: boolean;
   shareBaseUrl?: string;
   pasteApiUrl?: string;
-  mode?: "archive";
+  mode?: "archive" | "plan";
   customPlanPath?: string | null;
   opencodeClient?: OpencodeClient;
   cwd: string;
@@ -441,6 +442,94 @@ export async function startPlannotatorServer(
 
           // Rewrite url.pathname to the extracted apiPath for route matching
           const apiPath = parsed.apiPath;
+
+          // --- API: Create a new plan session (HTTP API, for remote CLI deployments) ---
+          if ((apiPath === "/api/sessions" || apiPath.startsWith("/s/") && apiPath.endsWith("/api/sessions")) && req.method === "POST") {
+            try {
+              const body = await req.json().catch(() => ({})) as { plan?: string; mode?: string; cwd?: string };
+              if (!body.plan) {
+                return Response.json({ error: "plan is required" }, { status: 400 });
+              }
+
+              // Check concurrent session limit
+              if (sessionRegistry.size >= MAX_SESSIONS) {
+                return Response.json(
+                  {
+                    error: `Concurrent session limit reached (${MAX_SESSIONS}). Please wait for an existing session to complete.`,
+                  },
+                  { status: 503 },
+                );
+              }
+
+              const sid = (parsed.sessionId as string | null) ?? randomUUID();
+              const httpCwd = body.cwd ?? cwd;
+              const httpMode = (body.mode as "archive" | "plan" | undefined) ?? "plan";
+              const httpSlug = generateSlug(body.plan);
+              const httpProject = (await detectProjectName()) ?? "_unknown";
+              const httpDraftKey = contentHash(body.plan);
+              const sessionScope: SessionScope = { cwd: httpCwd, sessionId: sid };
+
+              // Build minimal session context for HTTP-API-created sessions
+              const httpSessionCtx: SessionContext = {
+                sessionId: sid,
+                plan: body.plan,
+                origin: "http-api",
+                permissionMode: undefined,
+                sharingEnabled: true,
+                shareBaseUrl: ctx.shareBaseUrl,
+                pasteApiUrl: ctx.pasteApiUrl,
+                mode: httpMode,
+                customPlanPath: undefined,
+                opencodeClient: undefined,
+                cwd: httpCwd,
+                draftKey: httpDraftKey,
+                slug: httpSlug,
+                project: httpProject,
+                currentPlanPath: "",
+                previousPlan: null,
+                versionInfo: { version: 1, totalVersions: 1, project: httpProject },
+                repoInfo: null,
+                archivePlans: [],
+                initialArchivePlan: "",
+                resolveDone: undefined,
+                decisionPromise: waitForDecision(sid),
+                editorAnnotations: null,
+                externalAnnotations: null,
+                cachedArchivePlans: null,
+              };
+
+              // Save history only for plan mode (not archive)
+              if (httpMode !== "archive") {
+                const historyResult = saveToHistory(httpProject, httpSlug, body.plan, sessionScope);
+                httpSessionCtx.currentPlanPath = historyResult.path;
+                httpSessionCtx.versionInfo = {
+                  version: historyResult.version,
+                  totalVersions: getVersionCount(httpProject, httpSlug, sessionScope),
+                  project: httpProject,
+                };
+              }
+
+              registerSessionContext(httpSessionCtx);
+
+              // Return session URL using the path format provided by the client
+              const createdUrl = parsed.sessionId
+                ? `${getServerUrl(port)}/s/${sid}`
+                : getServerUrl(port);
+
+              return Response.json({
+                sessionId: sid,
+                url: createdUrl,
+                plan: body.plan.slice(0, 200),
+                slug: httpSlug,
+                mode: httpMode,
+                project: httpProject,
+              });
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error(`[/api/sessions] Error:`, err);
+              return Response.json({ error: message }, { status: 500 });
+            }
+          }
 
           // API: Get a specific plan version from history
           if (apiPath === "/api/plan/version") {
@@ -843,7 +932,7 @@ export async function startPlannotatorServer(
   }
 
   const port = server.port!;
-  const serverUrl = `http://localhost:${port}`;
+  const serverUrl = getServerUrl(port);
 
   // Notify caller that server is ready
   if (onReady) {

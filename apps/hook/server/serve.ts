@@ -32,7 +32,7 @@ import {
 } from "@plannotator/server/sessions";
 import { detectProjectName } from "@plannotator/server/project";
 import { openBrowser } from "@plannotator/server/browser";
-import { isRemoteSession } from "@plannotator/server/remote";
+import { isRemoteSession, getServerUrl } from "@plannotator/server/remote";
 
 process.on("exit", () => unregisterSession());
 process.on("SIGINT", () => { unregisterSession(); process.exit(0); });
@@ -76,19 +76,21 @@ async function main() {
     },
   });
 
-  registerSession({
+registerSession({
     pid: process.pid,
     port,
-    url: `http://localhost:${port}`,
+    url: getServerUrl(port),
     mode: "archive",
     project: planProject,
     startedAt: new Date().toISOString(),
     label: `server-${process.hostname}`,
   });
 
+  const serverUrl = getServerUrl(port);
   console.log(`[plannotator] Listening on port ${port}`);
-  console.log(`[plannotator] Remote URL: http://<your-ip>:${port}`);
+  console.log(`[plannotator] Server URL: ${serverUrl}`);
   console.log(`[plannotator] Sessions use /s/<sessionId>/api/* URL routing`);
+  console.log(`[plannotator] Remote: ${remote ? "yes (0.0.0.0)" : "no (127.0.0.1)"}`);
 
   // Keep alive
   await new Promise(() => {});

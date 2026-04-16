@@ -2,8 +2,9 @@
  * Remote session detection and port configuration
  *
  * Environment variables:
- *   PLANNOTATOR_REMOTE - Set to "1"/"true" to force remote, "0"/"false" to force local
- *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
+ *   PLANNOTATOR_REMOTE     - Set to "1"/"true" to force remote, "0"/"false" to force local
+ *   PLANNOTATOR_PORT       - Fixed port to use (default: random locally, 19432 for remote)
+ *   PLANNOTATOR_SERVER_URL - Full base URL for remote deployments (e.g. http://192.168.1.161:19432)
  *
  * Legacy (still supported): SSH_TTY, SSH_CONNECTION
  */
@@ -82,4 +83,28 @@ export function getServerHost(): string {
   const host = process.env.PLANNOTATOR_HOST;
   if (host) return host;
   return isRemoteSession() ? "0.0.0.0" : "127.0.0.1";
+}
+
+/**
+ * Get the server base URL prefix.
+ *
+ * When PLANNOTATOR_SERVER_URL is set (e.g. for remote deployments), use it as-is.
+ * Otherwise fall back to localhost.
+ */
+export function getServerBaseUrl(): string {
+  const url = process.env.PLANNOTATOR_SERVER_URL;
+  if (url) return url.replace(/\/$/, ""); // strip trailing slash
+  return "http://localhost";
+}
+
+/**
+ * Get the full server URL with port.
+ *
+ * When PLANNOTATOR_SERVER_URL is set, return it as-is (it already includes the port).
+ * Otherwise compose http://localhost:{port}.
+ */
+export function getServerUrl(port: number): string {
+  const url = process.env.PLANNOTATOR_SERVER_URL;
+  if (url) return url.replace(/\/$/, "");
+  return `http://localhost:${port}`;
 }
