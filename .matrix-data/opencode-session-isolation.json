@@ -504,9 +504,10 @@
   ],
   "_symlinks": [
     {
-      "from": "~/.nvm/versions/node/v20.20.0/lib/node_modules/opencode-ai/node_modules/@plannotator/opencode",
+      "from": "~/.opencode/node_modules/@plannotator/opencode",
       "to": "/home/bhd/Documents/Projects/bhd/plannotator/apps/opencode-plugin",
-      "type": "symlink"
+      "type": "symlink",
+      "note": "Created via mise run opencode-dev or manually. OpenCode resolves plugin from ~/.opencode/node_modules/, not ~/.nvm/."
     }
   ],
   "_git": {
@@ -563,5 +564,10 @@
     {
       "lesson": "EventSource browser-only \u2014 plugin uses 1s polling fallback for Bun runtime"
     }
-  ]
+  ],
+  "_opencode_config": {
+    "file": "~/.config/opencode/opencode.jsonc",
+    "plugin_entry": "@plannotator/opencode",
+    "verified": true
+  }
 }
