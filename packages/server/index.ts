@@ -275,10 +275,14 @@ function waitForDecision(sessionId: string): Promise<DecisionResult> {
  */
 function resolveDecision(sessionId: string, result: DecisionResult): void {
   const resolver = decisionResolvers.get(sessionId);
-  if (resolver) {
-    resolver(result);
-    decisionResolvers.delete(sessionId);
+  if (!resolver) return;
+  // Store result on the session context so poll/SSE endpoints can retrieve it
+  const ctx = sessionRegistry.get(sessionId);
+  if (ctx) {
+    (ctx as any).__decisionResult = result;
   }
+  decisionResolvers.delete(sessionId);
+  resolver(result);
 }
 
 /**
@@ -544,6 +548,95 @@ port,
               console.error(`[/api/sessions] Error:`, err);
               return Response.json({ error: message }, { status: 500 });
             }
+          }
+
+          // --- API: Poll decision status for a session ---
+          if (apiPath === "/api/decision" && req.method === "GET") {
+            const decisionCtx = ctx;
+            if (!decisionCtx) {
+              return Response.json({ error: "Session not found" }, { status: 404 });
+            }
+            // Check if the decision has been resolved
+            const resolver = decisionResolvers.get(decisionCtx.sessionId);
+            if (resolver) {
+              // Still pending — resolver hasn't been called yet
+              return Response.json({ pending: true });
+            }
+            // Decision was already resolved — return the result stored on the session
+            // The resolveDecision function stores the result, so we check if it exists
+            const storedResult = (decisionCtx as any).__decisionResult;
+            if (storedResult) {
+              return Response.json({
+                approved: storedResult.approved,
+                feedback: storedResult.feedback,
+                savedPath: storedResult.savedPath,
+                agentSwitch: storedResult.agentSwitch,
+                permissionMode: storedResult.permissionMode,
+              });
+            }
+            // Resolver was cleaned up but no stored result — treat as pending
+            return Response.json({ pending: true });
+          }
+
+          // --- API: SSE stream for real-time decision updates ---
+          if (apiPath === "/api/decision/stream" && req.method === "GET") {
+            const decisionCtx = ctx;
+            if (!decisionCtx) {
+              return new Response("Session not found", { status: 404 });
+            }
+
+            const stream = new ReadableStream({
+              start(controller) {
+                const encoder = new TextEncoder();
+
+                // Send connected event
+                controller.enqueue(encoder.encode(`event: connected\ndata: {}\n\n`));
+
+                // Check if already decided
+                const resolver = decisionResolvers.get(decisionCtx.sessionId);
+                if (!resolver) {
+                  const storedResult = (decisionCtx as any).__decisionResult;
+                  if (storedResult) {
+                    controller.enqueue(encoder.encode(`event: decision\ndata: ${JSON.stringify(storedResult)}\n\n`));
+                    controller.close();
+                    return;
+                  }
+                }
+
+                // Watch for decision resolution
+                const checkInterval = setInterval(() => {
+                  const res = decisionResolvers.get(decisionCtx.sessionId);
+                  if (!res) {
+                    // Resolver was removed — decision was made
+                    const storedResult = (decisionCtx as any).__decisionResult;
+                    if (storedResult) {
+                      controller.enqueue(encoder.encode(`event: decision\ndata: ${JSON.stringify(storedResult)}\n\n`));
+                    }
+                    clearInterval(checkInterval);
+                    controller.close();
+                  }
+                }, 200);
+
+                // Cleanup on abort
+                // @ts-ignore - signal may not exist in all runtimes
+                const signal = req.signal;
+                if (signal) {
+                  signal.addEventListener("abort", () => {
+                    clearInterval(checkInterval);
+                    try { controller.close(); } catch {}
+                  });
+                }
+              },
+            });
+
+            return new Response(stream, {
+              headers: {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Access-Control-Allow-Origin": "*",
+              },
+            });
           }
 
           // API: Get a specific plan version from history
