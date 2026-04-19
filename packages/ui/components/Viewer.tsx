@@ -66,8 +66,8 @@ interface ViewerProps {
   hasPreviousVersion?: boolean;
   /** Show amber "Demo" badge (portal mode, no shared content loaded) */
   showDemoBadge?: boolean;
-  /** Max width in px for the plan card (from plan width setting) */
-  maxWidth?: number;
+  /** Max width in px for the plan card; null removes the cap entirely. */
+  maxWidth?: number | null;
   /** Label for the copy button (default: "Copy plan") */
   copyLabel?: string;
   /**
@@ -443,7 +443,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   }, []);
 
   return (
-    <div className="relative z-50 w-full" style={maxWidth ? { maxWidth } : { maxWidth: 832 }}>
+    <div className="relative z-50 w-full" style={maxWidth === null ? undefined : { maxWidth: maxWidth ?? 832 }}>
       {taterMode && <TaterSpriteSitting />}
       <article
         ref={containerRef}
