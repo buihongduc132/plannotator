@@ -19,7 +19,7 @@ import { describe, expect, test, beforeAll, afterAll, afterEach } from "bun:test
 import { startReviewServer, type ReviewServerResult } from "./review";
 import { startAnnotateServer, type AnnotateServerResult } from "./annotate";
 import { unregisterSessionContext } from "./index";
-import { contentHash } from "./draft";
+import { contentHash, getDraftDir } from "./draft";
 import { existsSync, rmSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -404,7 +404,7 @@ describe("Annotate Server — /api/draft edge cases", () => {
   // Draft save/load round-trip
   // -------------------------------------------------------------------------
 
-  test("POST then GET /api/draft — save uses no scope but load uses session scope (known inconsistency)", async () => {
+  test("POST then GET /api/draft — save and load both use session scope (round-trip)", async () => {
     const draftData = {
       annotations: [
         {
@@ -429,14 +429,11 @@ describe("Annotate Server — /api/draft edge cases", () => {
     expect(saveRes.status).toBe(200);
     expect(await saveRes.json()).toEqual({ ok: true });
 
-    // Annotate server's handleDraftLoad passes { sessionId, cwd } scope,
-    // but handleDraftSave does NOT pass scope. This means the load reads
-    // from a session-scoped path that the save never wrote to.
-    // Result: GET returns 404 even though POST succeeded.
-    // This is a known scope mismatch — the test documents the current behavior.
+    // Both save and load now use { sessionId, cwd } scope, so the round-trip works.
     const loadRes = await fetch(`${annotateServer.url}/api/draft`);
-    expect(loadRes.status).toBe(404);
-    expect(await loadRes.json()).toEqual({ found: false });
+    expect(loadRes.status).toBe(200);
+    const body = await loadRes.json();
+    expect(body.annotations).toBeDefined();
 
     await fetch(`${annotateServer.url}/api/draft`, { method: "DELETE" });
   });
@@ -474,13 +471,8 @@ describe("Annotate Server — /api/draft edge cases", () => {
     const markdown = "# Annotate Test\n\nThis is a test markdown file for draft edge cases.";
     const key = contentHash(markdown);
 
-    // Annotate server scopes drafts with sessionId + cwd
-    const draftDir = join(
-      annotateTestCwd,
-      ".plannotator",
-      "drafts",
-      ANNOTATE_SESSION_ID,
-    );
+    const scope = { sessionId: ANNOTATE_SESSION_ID, cwd: annotateTestCwd };
+    const draftDir = getDraftDir(scope);
     mkdirSync(draftDir, { recursive: true });
     const draftPath = join(draftDir, `${key}.json`);
 
@@ -490,7 +482,6 @@ describe("Annotate Server — /api/draft edge cases", () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ found: false });
 
-    // Cleanup
     try {
       if (existsSync(draftPath)) rmSync(draftPath);
     } catch {}
@@ -500,12 +491,8 @@ describe("Annotate Server — /api/draft edge cases", () => {
     const markdown = "# Annotate Test\n\nThis is a test markdown file for draft edge cases.";
     const key = contentHash(markdown);
 
-    const draftDir = join(
-      annotateTestCwd,
-      ".plannotator",
-      "drafts",
-      ANNOTATE_SESSION_ID,
-    );
+    const scope = { sessionId: ANNOTATE_SESSION_ID, cwd: annotateTestCwd };
+    const draftDir = getDraftDir(scope);
     mkdirSync(draftDir, { recursive: true });
     const draftPath = join(draftDir, `${key}.json`);
 
@@ -515,7 +502,6 @@ describe("Annotate Server — /api/draft edge cases", () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ found: false });
 
-    // Cleanup
     try {
       if (existsSync(draftPath)) rmSync(draftPath);
     } catch {}

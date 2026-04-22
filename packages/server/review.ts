@@ -11,6 +11,7 @@
 
 import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
 import { isRemoteSession, getServerPort } from "./remote";
+import { isRemoteSession, getServerPort, getServerHost, getServerUrl } from "./remote";
 import { getSessionContext } from "./index";
 import type { Origin } from "@plannotator/shared/agents";
 import { type DiffType, type GitContext, runVcsDiff, getVcsFileContentsForDiff, canStageFiles, stageFile, unstageFile, resolveVcsCwd, validateFilePath, getVcsContext, gitRuntime } from "./vcs";
@@ -181,12 +182,21 @@ export async function startReviewServer(
 
   // Agent jobs — background process manager (late-binds serverUrl via getter)
   let serverUrl = "";
-  const resolveAgentCwd = (): string =>
+const resolveAgentCwd = (): string =>
     options.agentCwd ?? resolveVcsCwd(currentDiffType, gitContext?.cwd) ?? process.cwd();
   const agentJobs = createAgentJobHandler({
     mode: "review",
     getServerUrl: () => serverUrl,
     getCwd: resolveAgentCwd,
+const getCwd = () => {
+    if (options.agentCwd) return options.agentCwd;
+    return resolveVcsCwd(currentDiffType, gitContext?.cwd) ?? process.cwd();
+  };
+
+  const agentJobs = createAgentJobHandler({
+    mode: "review",
+    getServerUrl: () => serverUrl,
+    getCwd,
 
     async buildCommand(provider, config) {
       const cwd = resolveAgentCwd();
@@ -454,6 +464,8 @@ export async function startReviewServer(
 hostname: getServerHostname(),
         port: configuredPort,
 port,
+port,
+        hostname: getServerHost(),
 
         async fetch(req, server) {
           const url = new URL(req.url);
@@ -730,9 +742,10 @@ port,
 
           // API: Annotation draft persistence
           if (apiPath === "/api/draft") {
-            if (req.method === "POST") return handleDraftSave(req, draftKey);
-            if (req.method === "DELETE") return handleDraftDelete(draftKey);
-            return handleDraftLoad(draftKey);
+            const draftScope = sessionId ? { sessionId, cwd: getCwd() } : undefined;
+            if (req.method === "POST") return handleDraftSave(req, draftKey, draftScope);
+            if (req.method === "DELETE") return handleDraftDelete(draftKey, draftScope);
+            return handleDraftLoad(draftKey, draftScope);
           }
 
           // API: Editor annotations (VS Code extension)
@@ -894,7 +907,7 @@ port,
   }
 
   const port = server.port!;
-  serverUrl = `http://localhost:${port}`;
+  serverUrl = getServerUrl(port);
   const exitHandler = () => agentJobs.killAll();
   process.once("exit", exitHandler);
 

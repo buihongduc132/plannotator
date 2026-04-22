@@ -12,6 +12,7 @@
  */
 
 import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
+import { isRemoteSession, getServerPort, getServerHost, getServerUrl } from "./remote";
 import { getRepoInfo } from "./repo";
 import type { Origin } from "@plannotator/shared/agents";
 import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon } from "./shared-handlers";
@@ -174,6 +175,8 @@ export async function startAnnotateServer(
 hostname: getServerHostname(),
         port: configuredPort,
 port,
+port,
+        hostname: getServerHost(),
 
         async fetch(req, server) {
           const url = new URL(req.url);
@@ -277,8 +280,8 @@ port,
 
           // API: Annotation draft persistence
           if (apiPath === "/api/draft") {
-            if (req.method === "POST") return handleDraftSave(req, draftKey);
-            if (req.method === "DELETE") return handleDraftDelete(draftKey);
+            if (req.method === "POST") return handleDraftSave(req, draftKey, { sessionId, cwd });
+            if (req.method === "DELETE") return handleDraftDelete(draftKey, { sessionId, cwd });
             return handleDraftLoad(draftKey, { sessionId, cwd });
           }
 
@@ -373,8 +376,8 @@ port,
   // REQ-14: When sessionId is provided, embed it in the URL path so clients
   // can target this specific session via /s/<sessionId>/api/... routing.
   const serverUrl = sessionId
-    ? `http://localhost:${port}/s/${sessionId}`
-    : `http://localhost:${port}`;
+    ? `${getServerUrl(port)}/s/${sessionId}`
+    : getServerUrl(port);
 
   // Notify caller that server is ready
   if (onReady) {
