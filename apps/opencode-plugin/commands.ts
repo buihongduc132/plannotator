@@ -21,7 +21,8 @@ import {
 import { getGitContext, runGitDiffWithContext } from "@plannotator/server/git";
 import { parsePRUrl, checkPRAuth, fetchPR, getCliName, getMRLabel, getMRNumberLabel, getDisplayRepo } from "@plannotator/server/pr";
 import { loadConfig, resolveDefaultDiffType, resolveUseJina } from "@plannotator/shared/config";
-import { resolveMarkdownFile, resolveUserPath } from "@plannotator/shared/resolve-file";
+import { resolveMarkdownFile, resolveUserPath, hasMarkdownFiles } from "@plannotator/shared/resolve-file";
+import { FILE_BROWSER_EXCLUDED } from "@plannotator/shared/reference-common";
 import { htmlToMarkdown } from "@plannotator/shared/html-to-markdown";
 import { urlToMarkdown } from "@plannotator/shared/url-to-markdown";
 import { statSync } from "fs";
@@ -148,18 +149,24 @@ export async function handleAnnotateCommand(
   event: any,
   deps: CommandDeps
 ) {
-  const { client, htmlContent, getSharingEnabled, getShareBaseUrl, getPasteApiUrl } = deps;
+  const { client, htmlContent, getSharingEnabled, getShareBaseUrl, getPasteApiUrl, directory } = deps;
 
   // @ts-ignore - Event properties contain arguments
-  const filePath = event.properties?.arguments || event.arguments || "";
+  let filePath = event.properties?.arguments || event.arguments || "";
 
   if (!filePath) {
-    client.app.log({ level: "error", message: "Usage: /plannotator-annotate <file.md | file.html | https://...>" });
+    client.app.log({ level: "error", message: "Usage: /plannotator-annotate <file.md | file.html | https://... | folder/>" });
     return;
+  }
+
+  if (filePath.startsWith("@")) {
+    filePath = filePath.slice(1);
   }
 
   let markdown: string;
   let absolutePath: string;
+  let folderPath: string | undefined;
+  let annotateMode: "annotate" | "annotate-folder" = "annotate";
   let sourceInfo: string | undefined;
 
   // --- URL annotation ---
@@ -178,10 +185,27 @@ export async function handleAnnotateCommand(
     absolutePath = filePath;
     sourceInfo = filePath;
   } else {
-    const projectRoot = process.cwd();
+    const projectRoot = directory || process.cwd();
     const resolvedArg = resolveUserPath(filePath, projectRoot);
 
-    if (/\.html?$/i.test(resolvedArg)) {
+    let isFolder = false;
+    try {
+      isFolder = statSync(resolvedArg).isDirectory();
+    } catch {
+      // Not a directory, fall through to file resolution.
+    }
+
+    if (isFolder) {
+      if (!hasMarkdownFiles(resolvedArg, FILE_BROWSER_EXCLUDED, /\.(mdx?|html?)$/i)) {
+        client.app.log({ level: "error", message: `No markdown or HTML files found in ${resolvedArg}` });
+        return;
+      }
+      folderPath = resolvedArg;
+      absolutePath = resolvedArg;
+      markdown = "";
+      annotateMode = "annotate-folder";
+      client.app.log({ level: "info", message: `Opening annotation UI for folder ${resolvedArg}...` });
+    } else if (/\.html?$/i.test(resolvedArg)) {
       // HTML file annotation — convert to markdown via Turndown
       let fileSize: number;
       try {
@@ -226,6 +250,8 @@ export async function handleAnnotateCommand(
     markdown,
     filePath: absolutePath,
     origin: "opencode",
+    mode: annotateMode,
+    folderPath,
     sourceInfo,
     sharingEnabled: await getSharingEnabled(),
     shareBaseUrl: getShareBaseUrl(),

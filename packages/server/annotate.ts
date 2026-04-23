@@ -19,7 +19,7 @@ import { handleDoc, handleFileBrowserFiles, handleObsidianVaults, handleObsidian
 import { contentHash, deleteDraft } from "./draft";
 import { createExternalAnnotationHandler } from "./external-annotations";
 import { saveConfig, detectGitUser, getServerConfig } from "./config";
-import { dirname } from "path";
+import { dirname, resolve as resolvePath } from "path";
 import { isWSL } from "./browser";
 
 // Re-export utilities
@@ -105,7 +105,11 @@ export async function startAnnotateServer(
   const configuredPort = getServerPort();
   const wslFlag = await isWSL();
   const gitUser = detectGitUser();
-  const draftKey = contentHash(markdown);
+  const draftSource =
+    mode === "annotate-folder" && folderPath
+      ? `folder:${resolvePath(folderPath)}`
+      : markdown;
+  const draftKey = contentHash(draftSource);
   const externalAnnotations = createExternalAnnotationHandler("plan");
 
   // Detect repo info (cached for this session)
