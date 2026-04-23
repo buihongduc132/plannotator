@@ -54,3 +54,16 @@ plannotator-local
 
 # Matrix data — local requirements tracking (do not commit)
 /.matrix-data/
+
+# Added by maintenance script
+node_modules/
+venv/
+.venv/
+.abw/
+bin/
+logs/
+__pycache__/
+target/
+.pytest_cache/
+dist/
+build/
