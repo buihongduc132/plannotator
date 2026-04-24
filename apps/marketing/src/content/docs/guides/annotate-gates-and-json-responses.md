@@ -1,6 +1,6 @@
 ---
 title: "Annotate Gates and JSON Responses"
-description: "The --gate, --json, and --silent-approve flags extend plannotator annotate from a feedback tool into a structured review gate with machine-readable decisions. Use them to wire Plannotator into spec-driven workflows, Stop hooks, and agent pipelines."
+description: "The --gate, --json, and --hook flags extend plannotator annotate from a feedback tool into a structured review gate with machine-readable decisions. Use them to wire Plannotator into spec-driven workflows, Stop hooks, and agent pipelines."
 sidebar:
   order: 28
 section: "Guides"
@@ -12,7 +12,7 @@ section: "Guides"
 
 - **`--gate`** adds an Approve button to the annotation UI. The reviewer picks one of three decisions: approve, send annotations, or close.
 - **`--json`** emits every decision as a structured JSON object on stdout so hooks and plugins can route on the outcome without parsing free text.
-- **`--silent-approve`** suppresses the plaintext approve marker so Approve emits empty stdout. Naive hooks that treat any stdout as a block signal opt in here to keep silence-is-permission intact.
+- **`--hook`** emits hook-native JSON that works directly with Claude Code and Codex PostToolUse/Stop hook protocols. Implies `--gate`. Recommended for hook integrations.
 - The flags compose. Use any alone or together.
 - Identical semantics across every supported harness: Claude Code, Copilot CLI, Gemini CLI, OpenCode, Pi, and Codex.
 
@@ -23,9 +23,9 @@ section: "Guides"
 ──────────────────────────┼──────────────────┼─────────────────────────┼──────────────────────────┼───────────────────────────────────────────────
  (none)                   │  2-button        │  n/a                    │  empty                   │  feedback (plaintext)
  --gate                   │  3-button        │  `The user approved.`   │  empty                   │  feedback (plaintext)
- --gate --silent-approve  │  3-button        │  empty                  │  empty                   │  feedback (plaintext)
  --json                   │  2-button        │  n/a                    │  {"decision":"dismissed"}│  {"decision":"annotated","feedback":"..."}
  --gate --json            │  3-button        │  {"decision":"approved"}│  {"decision":"dismissed"}│  {"decision":"annotated","feedback":"..."}
+ --hook                   │  3-button        │  empty                  │  empty                   │  {"decision":"block","reason":"..."}
 ```
 
 ### JSON schema
@@ -70,7 +70,7 @@ A three-way review decision. The annotation UI adds an Approve button alongside 
 - **Send Annotations.** The reviewer has specific changes. The feedback is returned verbatim.
 - **Close.** The session ends without a decision. Neither a signal to the agent nor an instruction set.
 
-In plaintext mode, Approve emits the single line `The user approved.` on stdout so templates and agents can distinguish approval from close without needing `--json`. Close emits nothing. Send Annotations emits the feedback markdown. Hook authors who treat any non-empty stdout as a block signal can add `--silent-approve` to suppress the marker, or use `--json` for structured routing.
+In plaintext mode, Approve emits the single line `The user approved.` on stdout so templates and agents can distinguish approval from close without needing `--json`. Close emits nothing. Send Annotations emits the feedback markdown. For hook integrations, use `--hook` instead, which emits hook-native JSON directly.
 
 ## `--json`
 
@@ -82,17 +82,17 @@ Structured stdout. Every decision is emitted as a JSON object with a `decision` 
 - `--gate --json` unlocks all three decisions in structured form.
 - On OpenCode and Pi, `--json` is accepted silently. Those harnesses write back to the session directly rather than via stdout, so the flag has no effect there. Recipes remain portable.
 
-## `--silent-approve`
+## `--hook`
 
-Suppresses the plaintext approve marker. With `--gate --silent-approve`, Approve emits empty stdout (instead of `The user approved.`), matching Close. Send Annotations still emits feedback.
+Emits hook-native JSON that works directly with Claude Code and Codex PostToolUse/Stop hook protocols. Implies `--gate` (always three-button UX). If both `--hook` and `--json` are passed, `--hook` wins.
 
-This is the shape naive hooks want — the ones that treat any non-empty stdout as a block signal:
+- Approve → empty stdout → hook passes → agent proceeds.
+- Close → empty stdout → hook passes → agent proceeds.
+- Send Annotations → `{"decision":"block","reason":"<feedback>"}` → hook blocks with feedback.
 
-- Approve → empty → hook passes → agent proceeds.
-- Close → empty → hook passes → agent proceeds.
-- Send Annotations → feedback → hook blocks with that feedback as the reason.
+This is the recommended approach for hook integrations. The `{"decision":"block","reason":"..."}` format is the native protocol both Claude Code and Codex use for PostToolUse and Stop hooks. No wrapper script needed.
 
-`--silent-approve` only affects plaintext mode. In `--json` mode, Approve still emits `{"decision":"approved"}` — JSON callers route on the `decision` field, so there's no ambiguity to silence. The flag is accepted silently on OpenCode and Pi for the same reason `--json` is: those harnesses don't use stdout as the signal channel.
+The flag is accepted silently on OpenCode and Pi for the same reason `--json` is: those harnesses don't use stdout as the signal channel.
 
 ## Primary use cases
 

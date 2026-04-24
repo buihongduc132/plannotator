@@ -126,29 +126,32 @@ const cliNoJina = noJinaIdx !== -1;
 if (cliNoJina) args.splice(noJinaIdx, 1);
 
 // Annotate review-gate flags (#570): --gate adds an Approve button,
-// --json switches stdout to structured decision output, --silent-approve
-// suppresses the plaintext approve marker (naive hooks that treat any
-// stdout as a block signal opt in here to keep silence-is-permission).
+// --json switches stdout to structured decision output, --hook emits
+// hook-native JSON that works directly with Claude Code and Codex
+// PostToolUse/Stop hook protocols.
 const gateIdx = args.indexOf("--gate");
-const gateFlag = gateIdx !== -1;
+let gateFlag = gateIdx !== -1;
 if (gateFlag) args.splice(gateIdx, 1);
 const jsonIdx = args.indexOf("--json");
 const jsonFlag = jsonIdx !== -1;
 if (jsonFlag) args.splice(jsonIdx, 1);
-const silentApproveIdx = args.indexOf("--silent-approve");
-const silentApproveFlag = silentApproveIdx !== -1;
-if (silentApproveFlag) args.splice(silentApproveIdx, 1);
+const hookIdx = args.indexOf("--hook");
+const hookFlag = hookIdx !== -1;
+if (hookFlag) args.splice(hookIdx, 1);
+if (hookFlag) gateFlag = true;
 
 // Stdout matrix for annotate / annotate-last / copilot annotate-last (#570).
-// Plaintext mode:
-//   - Close emits empty stdout (naive PostToolUse / Stop hooks: empty = allow).
-//   - Approve emits "The user approved." so agents and templates can
-//     distinguish approval from close without needing --json. With
-//     --silent-approve, Approve also emits empty stdout (hook-friendly).
-//   - Send Annotations emits the plaintext feedback markdown.
-// --json switches to structured output across all three decisions;
-// --silent-approve has no effect in --json mode (JSON always routes by
-// decision field, so there's no ambiguity to silence).
+//
+// --hook (recommended for hooks):
+//   Approve/Close → empty stdout (hook passes, agent proceeds).
+//   Annotate → {"decision":"block","reason":"<feedback>"} (hook blocks).
+//   Works with both Claude Code and Codex hook protocols.
+//
+// --json (structured decisions for wrapper scripts):
+//   Emits {"decision":"approved|dismissed|annotated","feedback":"..."}.
+//
+// Plaintext (default):
+//   Close → empty. Approve → "The user approved." Annotate → feedback.
 export const APPROVED_PLAINTEXT_MARKER = "The user approved.";
 
 function emitAnnotateOutcome(result: {
@@ -156,6 +159,13 @@ function emitAnnotateOutcome(result: {
   exit?: boolean;
   approved?: boolean;
 }): void {
+  if (hookFlag) {
+    if (result.approved || result.exit) return;
+    if (result.feedback) {
+      console.log(JSON.stringify({ decision: "block", reason: result.feedback }));
+    }
+    return;
+  }
   if (jsonFlag) {
     if (result.approved) {
       console.log(JSON.stringify({ decision: "approved" }));
@@ -166,9 +176,9 @@ function emitAnnotateOutcome(result: {
     }
     return;
   }
-  if (result.exit) return; // empty stdout on close
+  if (result.exit) return;
   if (result.approved) {
-    if (!silentApproveFlag) console.log(APPROVED_PLAINTEXT_MARKER);
+    console.log(APPROVED_PLAINTEXT_MARKER);
     return;
   }
   if (result.feedback) console.log(result.feedback);
@@ -527,7 +537,7 @@ if (args[0] === "sessions") {
 
   const rawFilePath = args[1];
   if (!rawFilePath) {
-    console.error("Usage: plannotator annotate <file.md | file.html | https://... | folder/>  [--no-jina] [--gate] [--json] [--silent-approve]");
+    console.error("Usage: plannotator annotate <file.md | file.html | https://... | folder/>  [--no-jina] [--gate] [--json] [--hook]");
     process.exit(1);
   }
 

@@ -8,7 +8,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "spec.md",
       gate: false,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -18,7 +18,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "spec.md",
       gate: true,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -28,7 +28,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "spec.md",
       gate: true,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -38,7 +38,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "spec.md",
       gate: true,
       json: true,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -48,7 +48,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "",
       gate: true,
       json: true,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -58,7 +58,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "my file.md",
       gate: true,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -74,7 +74,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "@spec.md",
       gate: true,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -84,7 +84,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "@plannotator/ui/README.md",
       gate: false,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -94,7 +94,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "@docs/spec.md",
       gate: true,
       json: true,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -104,7 +104,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "https://example.com/docs",
       gate: true,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -114,7 +114,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "spec.md",
       gate: true,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -124,7 +124,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "",
       gate: false,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -134,7 +134,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "",
       gate: false,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -144,7 +144,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "./specs/",
       gate: true,
       json: true,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -160,7 +160,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "My  Notes.md",
       gate: true,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -170,7 +170,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "My  Notes.md",
       gate: true,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -180,7 +180,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "My\tNotes.md",
       gate: true,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -190,7 +190,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "/tmp/My  Notes.md",
       gate: false,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -205,7 +205,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "@foo.md",
       gate: true,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -215,7 +215,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "@foo.md",
       gate: true,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -225,7 +225,7 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "@My Notes.md",
       gate: true,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
@@ -235,53 +235,52 @@ describe("parseAnnotateArgs", () => {
       rawFilePath: "My Notes.md",
       gate: false,
       json: false,
-      silentApprove: false,
+      hook: false,
     });
   });
 
-  // --silent-approve (issue #570 follow-up) opts the plaintext Approve out of
-  // emitting the "The user approved." marker. It parses identically to the
-  // other flags and is recognized in any position, including without --gate
-  // (where it's a documented no-op — the parser still strips it so it doesn't
-  // leak into the path).
+  // --hook emits hook-native JSON ({"decision":"block","reason":"..."}) for
+  // annotations and empty stdout for approve/close. It implies --gate in the
+  // binary, but the parser is a pure tokenizer — it reports which flags were
+  // present without applying implication logic.
 
-  test("--silent-approve alongside --gate", () => {
-    expect(parseAnnotateArgs("spec.md --gate --silent-approve")).toEqual({
+  test("--hook alongside --gate", () => {
+    expect(parseAnnotateArgs("spec.md --gate --hook")).toEqual({
       filePath: "spec.md",
       rawFilePath: "spec.md",
       gate: true,
       json: false,
-      silentApprove: true,
+      hook: true,
     });
   });
 
-  test("--silent-approve with all three flags", () => {
-    expect(parseAnnotateArgs("spec.md --gate --json --silent-approve")).toEqual({
+  test("--hook with all three flags", () => {
+    expect(parseAnnotateArgs("spec.md --gate --json --hook")).toEqual({
       filePath: "spec.md",
       rawFilePath: "spec.md",
       gate: true,
       json: true,
-      silentApprove: true,
+      hook: true,
     });
   });
 
-  test("--silent-approve alone is stripped from path (no-op but not leaked)", () => {
-    expect(parseAnnotateArgs("spec.md --silent-approve")).toEqual({
-      filePath: "spec.md",
-      rawFilePath: "spec.md",
-      gate: false,
-      json: false,
-      silentApprove: true,
-    });
-  });
-
-  test("--silent-approve before path", () => {
-    expect(parseAnnotateArgs("--silent-approve --gate spec.md")).toEqual({
+  test("--hook alone implies gate", () => {
+    expect(parseAnnotateArgs("spec.md --hook")).toEqual({
       filePath: "spec.md",
       rawFilePath: "spec.md",
       gate: true,
       json: false,
-      silentApprove: true,
+      hook: true,
+    });
+  });
+
+  test("--hook before path", () => {
+    expect(parseAnnotateArgs("--hook --gate spec.md")).toEqual({
+      filePath: "spec.md",
+      rawFilePath: "spec.md",
+      gate: true,
+      json: false,
+      hook: true,
     });
   });
 });

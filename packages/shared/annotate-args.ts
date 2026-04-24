@@ -1,7 +1,7 @@
 /**
  * Parse CLI-style args arriving as a single whitespace-delimited string.
  *
- * Extracts the `--gate`, `--json`, and `--silent-approve` flags (issue #570)
+ * Extracts the `--gate`, `--json`, and `--hook` flags (issue #570)
  * from the remainder, which is treated as the target path. Leading `@` is
  * stripped via the shared at-reference helper — reference-mode is primary.
  * Scoped-package-style literal `@` paths are handled by a fallback that the
@@ -42,7 +42,7 @@ export interface ParsedAnnotateArgs {
   rawFilePath: string;
   gate: boolean;
   json: boolean;
-  silentApprove: boolean;
+  hook: boolean;
 }
 
 type Segment = { type: "ws" | "tok"; text: string };
@@ -50,12 +50,12 @@ type Segment = { type: "ws" | "tok"; text: string };
 const FLAG_MAP = {
   "--gate": "gate",
   "--json": "json",
-  "--silent-approve": "silentApprove",
+  "--hook": "hook",
 } as const satisfies Record<string, keyof Omit<ParsedAnnotateArgs, "filePath" | "rawFilePath">>;
 
 export function parseAnnotateArgs(raw: string): ParsedAnnotateArgs {
   const s = (raw ?? "").trim();
-  const flags = { gate: false, json: false, silentApprove: false };
+  const flags = { gate: false, json: false, hook: false };
 
   const segments: Segment[] = [];
   for (let i = 0; i < s.length;) {
@@ -96,6 +96,8 @@ export function parseAnnotateArgs(raw: string): ParsedAnnotateArgs {
       .join("")
       .trim(),
   );
+
+  if (flags.hook) flags.gate = true;
 
   return { filePath: stripAtPrefix(rawFilePath), rawFilePath, ...flags };
 }

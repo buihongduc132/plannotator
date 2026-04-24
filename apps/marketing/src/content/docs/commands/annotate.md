@@ -123,11 +123,11 @@ Switches stdout to a structured decision object so hooks can route programmatica
 
 `feedback` is only present when `decision === "annotated"`.
 
-### `--silent-approve`
+### `--hook`
 
-Suppresses the plaintext approve marker so Approve emits empty stdout instead of `The user approved.`. Use this with naive hooks that treat any non-empty stdout as a block signal. Approve and Close both become silent, and only Send Annotations blocks with feedback (silence-is-permission).
+Emits hook-native JSON that works directly with Claude Code and Codex PostToolUse/Stop hook protocols. Implies `--gate` (always three-button UX). Approve and Close emit empty stdout (hook passes), Send Annotations emits `{"decision":"block","reason":"<feedback>"}` (hook blocks with feedback).
 
-`--silent-approve` only affects plaintext mode. In `--json` mode, Approve continues to emit `{"decision":"approved"}` — JSON callers route on the `decision` field, so there's no ambiguity to silence.
+This is the recommended flag for hook integrations. If both `--hook` and `--json` are passed, `--hook` wins.
 
 ### Stdout matrix
 
@@ -135,13 +135,13 @@ Suppresses the plaintext approve marker so Approve emits empty stdout instead of
 |---|---|---|---|---|
 | *(none)* | 2-button | n/a | empty | feedback (plaintext) |
 | `--gate` | 3-button | `The user approved.` | empty | feedback (plaintext) |
-| `--gate --silent-approve` | 3-button | empty | empty | feedback (plaintext) |
 | `--json` | 2-button | n/a | `{"decision":"dismissed"}` | `{"decision":"annotated","feedback":"..."}` |
 | `--gate --json` | 3-button | `{"decision":"approved"}` | `{"decision":"dismissed"}` | `{"decision":"annotated","feedback":"..."}` |
+| `--hook` | 3-button | empty | empty | `{"decision":"block","reason":"..."}` |
 
-**Key property:** `--gate` plaintext output is unambiguous across three decisions — Close is empty, Send Annotations is feedback markdown, Approve is the line `The user approved.`. Drop the marker with `--silent-approve` when your hook treats any stdout as a block. Use `--json` when you want machine-readable decision objects instead of string matching.
+**Key property:** `--gate` plaintext output is unambiguous across three decisions. Use `--json` when you want machine-readable decision objects. Use `--hook` when wiring into Claude Code or Codex hooks directly.
 
-On OpenCode and Pi, `--json` and `--silent-approve` are silently accepted because those harnesses write back into the session directly rather than via stdout. The `--gate` flag behaves identically across all three harnesses.
+On OpenCode and Pi, `--json` and `--hook` are silently accepted because those harnesses write back into the session directly rather than via stdout. The `--gate` flag behaves identically across all three harnesses.
 
 See [Hook integration recipes](/docs/guides/hook-integration/) for ready-to-use PostToolUse and Stop hook examples.
 
