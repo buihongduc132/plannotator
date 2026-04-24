@@ -26,6 +26,8 @@ Interactive Plan & Code Review for AI Coding Agents. Mark up and refine your pla
 </tr>
 </table>
 
+**Annotate:** Plans, specs, folders, files, urls. send feedback directly to agents. 
+
 **New:** [Code Review](https://x.com/backnotprop/status/2031145299738263567?s=20)
   
   - send your feedback to agents
