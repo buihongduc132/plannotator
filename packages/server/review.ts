@@ -12,7 +12,7 @@
 import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
 import { isRemoteSession, getServerPort } from "./remote";
 import { isRemoteSession, getServerPort, getServerHost, getServerUrl } from "./remote";
-import { getSessionContext } from "./index";
+import { getSessionContext, extractSessionSlug, injectSessionPath } from "./index";
 import type { Origin } from "@plannotator/shared/agents";
 import { type DiffType, type GitContext, runVcsDiff, getVcsFileContentsForDiff, canStageFiles, stageFile, unstageFile, resolveVcsCwd, validateFilePath, getVcsContext, gitRuntime } from "./vcs";
 import { parseWorktreeDiffType, detectRemoteDefaultBranch, resolveBaseBranch } from "@plannotator/shared/review-core";
@@ -533,6 +533,7 @@ port,
               shareBaseUrl,
               repoInfo,
               isWSL: wslFlag,
+              cwd: getCwd(),
               ...(options.agentCwd && { agentCwd: options.agentCwd }),
               ...(isPRMode && { prMetadata, platformUser }),
               ...(isPRMode && initialViewedFiles.length > 0 && { viewedFiles: initialViewedFiles }),
@@ -867,6 +868,12 @@ port,
           if (apiPath === "/favicon.svg") return handleFavicon();
 
           // Serve embedded HTML for all other routes (SPA)
+          const slug = extractSessionSlug(url.pathname);
+          if (slug) {
+            return new Response(injectSessionPath(htmlContent, slug), {
+              headers: { "Content-Type": "text/html" },
+            });
+          }
           return new Response(htmlContent, {
             headers: { "Content-Type": "text/html" },
           });

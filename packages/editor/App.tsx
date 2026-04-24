@@ -29,6 +29,7 @@ import { getOctarineSettings, isOctarineConfigured } from '@plannotator/ui/utils
 import { getDefaultNotesApp } from '@plannotator/ui/utils/defaultNotesApp';
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
 import { getPlanSaveSettings } from '@plannotator/ui/utils/planSave';
+import { getApiUrl } from '@plannotator/ui/utils/apiUrl';
 import { getUIPreferences, type UIPreferences, type PlanWidth } from '@plannotator/ui/utils/uiPreferences';
 import { getEditorMode, saveEditorMode } from '@plannotator/ui/utils/editorMode';
 import { getInputMethod, saveInputMethod } from '@plannotator/ui/utils/inputMethod';
@@ -166,9 +167,10 @@ const App: React.FC = () => {
   const [pasteApiUrl, setPasteApiUrl] = useState<string | undefined>(undefined);
   const [repoInfo, setRepoInfo] = useState<{ display: string; branch?: string; host?: string } | null>(null);
   const [projectRoot, setProjectRoot] = useState<string | null>(null);
-  const [wideModeType, setWideModeType] = useState<WideModeType | null>(null);
+const [wideModeType, setWideModeType] = useState<WideModeType | null>(null);
   const wideModeSnapshotRef = useRef<WideModeLayoutSnapshot | null>(null);
   const lastAppliedTocEnabledRef = useRef(uiPrefs.tocEnabled);
+const [cwd, setCwd] = useState<string | null>(null);
 
   useEffect(() => {
     document.title = repoInfo ? `${repoInfo.display} · Plannotator` : "Plannotator";
@@ -649,12 +651,13 @@ const App: React.FC = () => {
     if (isLoadingShared) return; // Wait for share check to complete
     if (isSharedSession) return; // Already loaded from share
 
-    fetch('/api/plan')
+    fetch(getApiUrl('/api/plan'))
       .then(res => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'archive'; filePath?: string; sourceInfo?: string; gate?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; isWSL?: boolean; serverConfig?: { displayName?: string; gitUser?: string } }) => {
+.then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'archive'; filePath?: string; sourceInfo?: string; gate?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; isWSL?: boolean; serverConfig?: { displayName?: string; gitUser?: string } }) => {
+.then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'archive'; filePath?: string; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; cwd?: string; isWSL?: boolean; serverConfig?: { displayName?: string; gitUser?: string } }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
         // gitUser drives the "Use git name" button in Settings; stays undefined (button hidden) when unavailable
@@ -704,6 +707,9 @@ const App: React.FC = () => {
         }
         if (data.projectRoot) {
           setProjectRoot(data.projectRoot);
+        }
+        if (data.cwd) {
+          setCwd(data.cwd);
         }
         // Capture plan version history data
         if (data.previousPlan !== undefined) {
@@ -794,7 +800,7 @@ const App: React.FC = () => {
     if (targets.length === 0) return;
     autoSaveAttempted.current = true;
 
-    const autoSavePromise = fetch('/api/save-notes', {
+    const autoSavePromise = fetch(getApiUrl('/api/save-notes'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -862,7 +868,7 @@ const App: React.FC = () => {
         : pendingPasteImage.file;
       formData.append('file', fileToUpload);
 
-      const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      const res = await fetch(getApiUrl('/api/upload'), { method: 'POST', body: formData });
       if (res.ok) {
         const data = await res.json();
         setGlobalAttachments(prev => [...prev, { path: data.path, name }]);
@@ -952,7 +958,7 @@ const App: React.FC = () => {
         body.feedback = annotationsOutput;
       }
 
-      await fetch('/api/approve', {
+      await fetch(getApiUrl('/api/approve'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -967,7 +973,7 @@ const App: React.FC = () => {
     setIsSubmitting(true);
     try {
       const planSaveSettings = getPlanSaveSettings();
-      await fetch('/api/deny', {
+      await fetch(getApiUrl('/api/deny'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -988,7 +994,7 @@ const App: React.FC = () => {
   const handleAnnotateFeedback = async () => {
     setIsSubmitting(true);
     try {
-      await fetch('/api/feedback', {
+      await fetch(getApiUrl('/api/feedback'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1017,7 +1023,7 @@ const App: React.FC = () => {
   const handleAnnotateExit = useCallback(async () => {
     setIsExiting(true);
     try {
-      const res = await fetch('/api/exit', { method: 'POST' });
+      const res = await fetch(getApiUrl('/api/exit'), { method: 'POST' });
       if (res.ok) {
         setSubmitted('exited');
       } else {
@@ -1272,7 +1278,7 @@ const App: React.FC = () => {
 
     const targetName = target === 'obsidian' ? 'Obsidian' : target === 'bear' ? 'Bear' : 'Octarine';
     try {
-      const res = await fetch('/api/save-notes', {
+      const res = await fetch(getApiUrl('/api/save-notes'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -1714,6 +1720,7 @@ const App: React.FC = () => {
                   onModeChange={handleEditorModeChange}
                   taterMode={taterMode}
                   repoInfo={repoInfo}
+                  cwd={cwd}
                   planDiffStats={planDiff.diffStats}
                   isPlanDiffActive={isPlanDiffActive}
                   hasPreviousVersion={planDiff.hasPreviousVersion}
@@ -1819,6 +1826,7 @@ const App: React.FC = () => {
                   onAddGlobalAttachment={handleAddGlobalAttachment}
                   onRemoveGlobalAttachment={handleRemoveGlobalAttachment}
                   repoInfo={repoInfo}
+                  cwd={cwd}
                   stickyActions={uiPrefs.stickyActionsEnabled}
                   planDiffStats={linkedDocHook.isActive ? null : planDiff.diffStats}
                   isPlanDiffActive={isPlanDiffActive}

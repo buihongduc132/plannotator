@@ -4,6 +4,7 @@ import { ThemeProvider, useTheme } from '@plannotator/ui/components/ThemeProvide
 import { TooltipProvider } from '@plannotator/ui/components/Tooltip';
 import { ConfirmDialog } from '@plannotator/ui/components/ConfirmDialog';
 import { Settings } from '@plannotator/ui/components/Settings';
+import { getApiUrl } from '@plannotator/ui/utils/apiUrl';
 import { FeedbackButton, ApproveButton, ExitButton } from '@plannotator/ui/components/ToolbarButtons';
 import { AgentReviewActions } from './components/AgentReviewActions';
 import { UpdateBanner } from '@plannotator/ui/components/UpdateBanner';
@@ -181,6 +182,7 @@ const ReviewApp: React.FC = () => {
   const [showExitWarning, setShowExitWarning] = useState(false);
   const [sharingEnabled, setSharingEnabled] = useState(true);
   const [repoInfo, setRepoInfo] = useState<{ display: string; branch?: string } | null>(null);
+  const [cwd, setCwd] = useState<string | null>(null);
 
   useEffect(() => {
     document.title = repoInfo ? `${repoInfo.display} · Code Review` : "Code Review";
@@ -394,7 +396,7 @@ const ReviewApp: React.FC = () => {
 
   // Check AI capabilities on mount
   useEffect(() => {
-    fetch('/api/ai/capabilities')
+    fetch(getApiUrl('/api/ai/capabilities'))
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data?.available) {
@@ -668,7 +670,7 @@ const ReviewApp: React.FC = () => {
 
   // Load diff content - try API first, fall back to demo
   useEffect(() => {
-    fetch('/api/diff')
+    fetch(getApiUrl('/api/diff'))
       .then(res => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
@@ -689,6 +691,7 @@ const ReviewApp: React.FC = () => {
         error?: string;
         isWSL?: boolean;
         serverConfig?: { displayName?: string; gitUser?: string };
+        cwd?: string;
       }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
@@ -727,10 +730,11 @@ const ReviewApp: React.FC = () => {
         }
         if (data.error) setDiffError(data.error);
         if (data.isWSL) setIsWSL(true);
-        // Mark diff type setup as pending on first run (local mode only)
+// Mark diff type setup as pending on first run (local mode only)
         if (data.diffType && !data.prMetadata && data.gitContext?.vcsType !== 'p4' && needsDiffTypeSetup()) {
           setDiffTypeSetupPending(true);
         }
+if (data.cwd) setCwd(data.cwd);
       })
       .catch(() => {
         // Not in API mode - use demo content
@@ -906,7 +910,7 @@ const ReviewApp: React.FC = () => {
       // Sync viewed state to GitHub (fire and forget — best effort)
       // Capture willBeViewed inside the callback to ensure correctness with React batching
       if (prMetadata && prMetadata.platform === 'github') {
-        fetch('/api/pr-viewed', {
+        fetch(getApiUrl('/api/pr-viewed'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ filePaths: [filePath], viewed: willBeViewed }),
@@ -952,7 +956,7 @@ const ReviewApp: React.FC = () => {
   const fetchDiffSwitch = useCallback(async (fullDiffType: string, baseOverride?: string): Promise<boolean> => {
     setIsLoadingDiff(true);
     try {
-      const res = await fetch('/api/diff/switch', {
+      const res = await fetch(getApiUrl('/api/diff/switch'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1243,7 +1247,7 @@ const ReviewApp: React.FC = () => {
       const agentSwitchSettings = getAgentSwitchSettings();
       const effectiveAgent = getEffectiveAgentName(agentSwitchSettings);
 
-      const res = await fetch('/api/feedback', {
+      const res = await fetch(getApiUrl('/api/feedback'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1270,7 +1274,7 @@ const ReviewApp: React.FC = () => {
   const handleExit = useCallback(async () => {
     setIsExiting(true);
     try {
-      const res = await fetch('/api/exit', { method: 'POST' });
+      const res = await fetch(getApiUrl('/api/exit'), { method: 'POST' });
       if (res.ok) {
         setSubmitted('exited');
       } else {
@@ -1286,7 +1290,7 @@ const ReviewApp: React.FC = () => {
   const handleApprove = useCallback(async () => {
     setIsApproving(true);
     try {
-      const res = await fetch('/api/feedback', {
+      const res = await fetch(getApiUrl('/api/feedback'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1374,7 +1378,7 @@ const ReviewApp: React.FC = () => {
     setPlatformActionError(null);
     try {
       const payload = buildPRReviewPayload(action, generalComment);
-      const prRes = await fetch('/api/pr-action', {
+      const prRes = await fetch(getApiUrl('/api/pr-action'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1398,7 +1402,7 @@ const ReviewApp: React.FC = () => {
       const statusMessage = action === 'approve'
         ? `${mrLabel === 'MR' ? 'Merge request' : 'Pull request'} approved on ${platformLabel}${prLink ? ': ' + prLink : ''}`
         : `${mrLabel === 'MR' ? 'Merge request' : 'Pull request'} reviewed on ${platformLabel}${prLink ? ': ' + prLink : ''}`;
-      await fetch('/api/feedback', {
+      await fetch(getApiUrl('/api/feedback'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1566,9 +1570,9 @@ const ReviewApp: React.FC = () => {
                   </button>
                 </div>
               </div>
-            ) : repoInfo ? (
+            ) : repoInfo || cwd ? (
               <div className="min-w-0 flex items-center gap-2 md:gap-3">
-                {repoInfo.branch && (
+                {repoInfo?.branch && (
                   <span
                     className="text-xs font-mono text-foreground truncate"
                     title={repoInfo.branch}
@@ -1576,13 +1580,23 @@ const ReviewApp: React.FC = () => {
                     {repoInfo.branch}
                   </span>
                 )}
-                <span
-                  className="text-xs text-muted-foreground/60 inline-flex items-center gap-1 truncate max-w-[220px]"
-                  title={repoInfo.display}
-                >
-                  <RepoIcon className="w-3 h-3 flex-shrink-0" />
-                  {repoInfo.display}
-                </span>
+                {repoInfo && (
+                  <span
+                    className="text-xs text-muted-foreground/60 inline-flex items-center gap-1 truncate max-w-[220px]"
+                    title={repoInfo.display}
+                  >
+                    <RepoIcon className="w-3 h-3 flex-shrink-0" />
+                    {repoInfo.display}
+                  </span>
+                )}
+                {cwd && (
+                  <span
+                    className="text-xs text-muted-foreground/60 font-mono inline-flex items-center gap-1 truncate max-w-[250px]"
+                    title={cwd}
+                  >
+                    {cwd.split('/').pop() || cwd}
+                  </span>
+                )}
               </div>
             ) : (
               <span className="text-xs text-muted-foreground/70">Review</span>

@@ -13,6 +13,7 @@
 
 import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
 import { isRemoteSession, getServerPort, getServerHost, getServerUrl } from "./remote";
+import { extractSessionSlug, injectSessionPath } from "./index";
 import { getRepoInfo } from "./repo";
 import type { Origin } from "@plannotator/shared/agents";
 import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon } from "./shared-handlers";
@@ -212,6 +213,7 @@ port,
               pasteApiUrl,
               repoInfo,
               projectRoot: folderPath || cwd || process.cwd(),
+              cwd,
               isWSL: wslFlag,
               serverConfig: getServerConfig(gitUser),
             });
@@ -333,6 +335,12 @@ port,
           if (url.pathname === "/favicon.svg") return handleFavicon();
 
           // Serve embedded HTML for all other routes (SPA)
+          const slug = extractSessionSlug(url.pathname);
+          if (slug) {
+            return new Response(injectSessionPath(htmlContent, slug), {
+              headers: { "Content-Type": "text/html" },
+            });
+          }
           return new Response(htmlContent, {
             headers: { "Content-Type": "text/html" },
           });

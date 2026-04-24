@@ -65,6 +65,7 @@ interface StickyHeaderLaneProps {
 
   // Badge state
   repoInfo?: { display: string; branch?: string } | null;
+  cwd?: string | null;
   planDiffStats?: PlanDiffStats | null;
   isPlanDiffActive?: boolean;
   hasPreviousVersion?: boolean;
@@ -90,6 +91,7 @@ export const StickyHeaderLane: React.FC<StickyHeaderLaneProps> = ({
   onModeChange,
   taterMode,
   repoInfo,
+  cwd,
   planDiffStats,
   isPlanDiffActive,
   hasPreviousVersion,
@@ -247,6 +249,7 @@ export const StickyHeaderLane: React.FC<StickyHeaderLaneProps> = ({
           <DocBadges
             layout="row"
             repoInfo={repoInfo}
+            cwd={cwd}
             planDiffStats={planDiffStats}
             isPlanDiffActive={isPlanDiffActive}
             hasPreviousVersion={hasPreviousVersion}

@@ -40,6 +40,7 @@ import {
   listVersions,
   listArchivedPlans,
   readArchivedPlan,
+  listProjectPlans,
   type ArchivedPlan,
   type SessionScope,
 } from "./storage";
@@ -92,6 +93,10 @@ export interface SessionContext {
   customPlanPath?: string | null;
   opencodeClient?: OpencodeClient;
   cwd: string;
+  /** User-friendly display name (from submit_plan or POST /api/sessions) */
+  name?: string | null;
+  /** Resolved name-based slug (deduplicated if collides, set by registerSessionContext) */
+  nameSlug?: string;
 
   // Computed session state
   draftKey: string;
@@ -131,10 +136,33 @@ function scopeFromContext(ctx: SessionContext): SessionScope {
  * by looking up the session context in this map.
  */
 const sessionRegistry = new Map<string, SessionContext>();
+const slugToSessionId = new Map<string, string>();
+
+function sanitizeForSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/[\s_]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+/**
+ * Resolve a unique slug by appending -2, -3, ... if the base slug is already taken.
+ */
+function resolveUniqueSlug(baseSlug: string): string {
+  if (!slugToSessionId.has(baseSlug)) return baseSlug;
+  let i = 2;
+  while (slugToSessionId.has(`${baseSlug}-${i}`)) i++;
+  return `${baseSlug}-${i}`;
+}
 
 /**
  * Register a session in the global registry.
  * Throws if a session with the same ID is already active (prevents overwriting).
+ * If the name-derived slug collides with an existing session, deduplicates by
+ * appending -2, -3, etc. Stores the resolved slug on ctx.nameSlug.
  */
 export function registerSessionContext(ctx: SessionContext): void {
   if (sessionRegistry.has(ctx.sessionId)) {
@@ -145,6 +173,14 @@ export function registerSessionContext(ctx: SessionContext): void {
     );
   }
   sessionRegistry.set(ctx.sessionId, ctx);
+  if (ctx.name) {
+    const baseNameSlug = sanitizeForSlug(ctx.name);
+    if (baseNameSlug) {
+      const uniqueSlug = resolveUniqueSlug(baseNameSlug);
+      ctx.nameSlug = uniqueSlug;
+      slugToSessionId.set(uniqueSlug, ctx.sessionId);
+    }
+  }
   console.log(`[plannotator] Registered session context: ${ctx.sessionId}`);
 }
 
@@ -152,9 +188,11 @@ export function registerSessionContext(ctx: SessionContext): void {
  * Unregister a session from the global registry.
  */
 export function unregisterSessionContext(sessionId: string): void {
+  const ctx = sessionRegistry.get(sessionId);
+  if (ctx?.nameSlug && slugToSessionId.get(ctx.nameSlug) === sessionId) {
+    slugToSessionId.delete(ctx.nameSlug);
+  }
   sessionRegistry.delete(sessionId);
-  // REQ-09: Clean up decision resolver for this session to prevent memory leaks and
-  // avoid dangling resolvers that could fire if resolveDecision is called after unregister.
   decisionResolvers.delete(sessionId);
   console.log(`[plannotator] Unregistered session context: ${sessionId}`);
 }
@@ -172,6 +210,12 @@ export function getSessionContext(sessionId: string): SessionContext | undefined
 const SESSION_PATH_REGEX = /^\/s\/([^/]+)(\/api\/.*)$/;
 
 /**
+ * Regex to extract slug from bare session paths: /s/<slug> or /s/<slug>/anything
+ * Used by SPA fallback to inject session base path into HTML.
+ */
+const BARE_SESSION_SLUG_REGEX = /^\/s\/([^/]+)(?:\/.*)?$/;
+
+/**
  * Parse a URL pathname to extract optional sessionId and the remaining API path.
  * Returns { sessionId, apiPath } if the path matches /s/<id>/api/...,
  * or { sessionId: null, apiPath } for flat /api/... paths (single-session mode).
@@ -182,6 +226,38 @@ function parseSessionPath(pathname: string): { sessionId: string | null; apiPath
     return { sessionId: match[1], apiPath: match[2] };
   }
   return { sessionId: null, apiPath: pathname };
+}
+
+/**
+ * Extract session slug from any /s/<slug>... path.
+ * Returns the slug if the path starts with /s/<something>, null otherwise.
+ * Used by SPA fallback to inject the session base path into HTML.
+ */
+export function extractSessionSlug(pathname: string): string | null {
+  const match = BARE_SESSION_SLUG_REGEX.exec(pathname);
+  return match ? match[1] : null;
+}
+
+/**
+ * Inject a session base path into HTML so client-side fetch('/api/...') resolves correctly.
+ * Inserts `window.__PLANNOTATOR_SESSION_PATH__` before the structural `</head>` tag.
+ *
+ * Two non-obvious edge cases handled here:
+ * 1. The Vite-bundled JS (inline in a <script> tag) contains the literal string "</head>"
+ *    inside DOMPurify's source code. `String.replace` would match that FIRST, injecting into
+ *    the JS bundle instead of the actual HTML structure. We use `lastIndexOf` to target the
+ *    real closing tag.
+ * 2. We split the closing `</script>` tag via concatenation (`"<" + "/script>"`) to prevent
+ *    the browser's HTML parser from closing the parent `<script type="module">` prematurely.
+ */
+export function injectSessionPath(html: string, slug: string): string {
+  if (!html) return html;
+  // lastIndexOf: the bundled JS contains "</head>" as a string literal (DOMPurify source).
+  // The LAST occurrence is the actual HTML closing tag.
+  const headCloseIdx = html.lastIndexOf("</head>");
+  if (headCloseIdx === -1) return html;
+  const injection = `<script>window.__PLANNOTATOR_SESSION_PATH__="/s/${slug}"<` + `/script>`;
+  return html.slice(0, headCloseIdx) + injection + html.slice(headCloseIdx);
 }
 
 // --- Types ---
@@ -213,6 +289,8 @@ export interface ServerOptions {
   sessionId?: string;
   /** Current working directory for file operations */
   cwd?: string;
+  /** Optional user-friendly name for the plan/session */
+  name?: string;
 }
 
 export interface ServerResult {
@@ -300,7 +378,7 @@ function resolveDecision(sessionId: string, result: DecisionResult): void {
 export async function startPlannotatorServer(
   options: ServerOptions
 ): Promise<ServerResult> {
-  const { plan, origin, htmlContent, permissionMode, sharingEnabled = true, shareBaseUrl, pasteApiUrl, onReady, mode, customPlanPath, sessionId: optSessionId } = options;
+  const { plan, origin, htmlContent, permissionMode, sharingEnabled = true, shareBaseUrl, pasteApiUrl, onReady, mode, customPlanPath, sessionId: optSessionId, name } = options;
 
   const sessionId = optSessionId ?? randomUUID();
   console.log(`[plannotator] ${optSessionId ? "sessionId:" : "sessionId not provided, generated:"} ${sessionId}`);
@@ -397,6 +475,7 @@ export async function startPlannotatorServer(
     customPlanPath,
     opencodeClient: options.opencodeClient,
     cwd,
+    name: name ?? null,
     draftKey,
     slug,
     project,
@@ -441,7 +520,11 @@ port,
           // Multi-session mode: /s/<sessionId>/api/*
           let ctx: SessionContext;
           if (parsed.sessionId) {
-            const found = getSessionContext(parsed.sessionId);
+            let found = getSessionContext(parsed.sessionId);
+            if (!found) {
+              const slugTarget = slugToSessionId.get(parsed.sessionId);
+              if (slugTarget) found = getSessionContext(slugTarget);
+            }
             if (!found) {
               return Response.json(
                 {
@@ -465,7 +548,7 @@ port,
           // --- API: Create a new plan session (HTTP API, for remote CLI deployments) ---
           if ((apiPath === "/api/sessions" || apiPath.startsWith("/s/") && apiPath.endsWith("/api/sessions")) && req.method === "POST") {
             try {
-              const body = await req.json().catch(() => ({})) as { plan?: string; mode?: string; cwd?: string };
+              const body = await req.json().catch(() => ({})) as { plan?: string; mode?: string; cwd?: string; name?: string };
               if (!body.plan) {
                 return Response.json({ error: "plan is required" }, { status: 400 });
               }
@@ -501,6 +584,7 @@ port,
                 customPlanPath: undefined,
                 opencodeClient: undefined,
                 cwd: httpCwd,
+                name: body.name ?? null,
                 draftKey: httpDraftKey,
                 slug: httpSlug,
                 project: httpProject,
@@ -530,16 +614,16 @@ port,
 
               registerSessionContext(httpSessionCtx);
 
-              // Return session URL using the path format provided by the client
-              const createdUrl = parsed.sessionId
-                ? `${getServerUrl(port)}/s/${sid}`
-                : getServerUrl(port);
+              const resolvedNameSlug = httpSessionCtx.nameSlug ?? null;
+              const pathSegment = resolvedNameSlug || sid;
+              const createdUrl = `${getServerUrl(port)}/s/${pathSegment}`;
 
               return Response.json({
                 sessionId: sid,
                 url: createdUrl,
                 plan: body.plan.slice(0, 200),
-                slug: httpSlug,
+                slug: resolvedNameSlug || httpSlug,
+                name: body.name ?? null,
                 mode: httpMode,
                 project: httpProject,
               });
@@ -548,6 +632,76 @@ port,
               console.error(`[/api/sessions] Error:`, err);
               return Response.json({ error: message }, { status: 500 });
             }
+          }
+
+          // --- API: List all active sessions (GET) ---
+          if (apiPath === "/api/sessions" && req.method === "GET") {
+            const sessions = Array.from(sessionRegistry.values()).map((s) => ({
+              sessionId: s.sessionId,
+              mode: s.mode ?? "plan",
+              origin: s.origin,
+              project: s.project,
+              slug: s.slug,
+              name: s.name ?? null,
+              cwd: s.cwd,
+              url: `${getServerUrl(port)}/s/${s.sessionId}`,
+            }));
+            return Response.json({
+              sessions,
+              count: sessions.length,
+              maxSessions: MAX_SESSIONS,
+            });
+          }
+
+          // --- API: List all plans from history (GET) ---
+          if (apiPath === "/api/plans" && req.method === "GET") {
+            // Collect plans from all sessions' projects
+            const projectsSeen = new Set<string>();
+            const allPlans: Array<{ slug: string; versions: number; lastModified: string; project: string }> = [];
+
+            for (const s of sessionRegistry.values()) {
+              if (projectsSeen.has(s.project)) continue;
+              projectsSeen.add(s.project);
+              const scope = scopeFromContext(s);
+              const projectPlans = listProjectPlans(s.project, scope);
+              for (const p of projectPlans) {
+                allPlans.push({ ...p, project: s.project });
+              }
+            }
+
+            // Also check for the default "_unknown" project if not seen
+            if (!projectsSeen.has("_unknown")) {
+              const unknownPlans = listProjectPlans("_unknown");
+              for (const p of unknownPlans) {
+                allPlans.push({ ...p, project: "_unknown" });
+              }
+            }
+
+            // Sort by most recently modified first
+            allPlans.sort((a, b) => b.lastModified.localeCompare(a.lastModified));
+
+            return Response.json({ plans: allPlans });
+          }
+
+          // --- API: Get single session details (GET) ---
+          const sessionDetailMatch = apiPath.match(/^\/api\/sessions\/([^/]+)$/);
+          if (sessionDetailMatch && req.method === "GET") {
+            const targetId = sessionDetailMatch[1];
+            const targetCtx = sessionRegistry.get(targetId);
+            if (!targetCtx) {
+              return Response.json({ error: "Session not found" }, { status: 404 });
+            }
+            return Response.json({
+              sessionId: targetCtx.sessionId,
+              mode: targetCtx.mode ?? "plan",
+              origin: targetCtx.origin,
+              project: targetCtx.project,
+              slug: targetCtx.slug,
+              name: targetCtx.name ?? null,
+              cwd: targetCtx.cwd,
+              url: `${getServerUrl(port)}/s/${targetCtx.sessionId}`,
+              planPreview: targetCtx.plan.slice(0, 300),
+            });
           }
 
           // --- API: Poll decision status for a session ---
@@ -722,6 +876,7 @@ port,
               previousPlan: ctx.previousPlan,
               versionInfo: ctx.versionInfo,
               projectRoot: process.cwd(),
+              cwd: ctx.cwd,
               isWSL: wslFlag,
               serverConfig: getServerConfig(gitUser),
               sessionId: ctx.sessionId,
@@ -1002,6 +1157,12 @@ port,
           }
 
           // Serve embedded HTML for all other routes (SPA)
+          const slug = parsed.sessionId || extractSessionSlug(url.pathname);
+          if (slug) {
+            return new Response(injectSessionPath(htmlContent, slug), {
+              headers: { "Content-Type": "text/html" },
+            });
+          }
           return new Response(htmlContent, {
             headers: { "Content-Type": "text/html" },
           });
