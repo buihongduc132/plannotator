@@ -1,4 +1,6 @@
 import { execSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { execSync, spawnSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
@@ -219,6 +221,7 @@ export async function startReviewServer(options: {
 		: getRepoInfo();
 	const editorAnnotations = createEditorAnnotationHandler();
 	const externalAnnotations = createExternalAnnotationHandler("review");
+	const reviewId = randomUUID();
 
 	let currentPatch = options.rawPatch;
 	let currentGitRef = options.gitRef;
@@ -552,7 +555,24 @@ export async function startReviewServer(options: {
 				...(isPRMode && { prMetadata: prMeta, platformUser }),
 				...(isPRMode && initialViewedFiles.length > 0 && { viewedFiles: initialViewedFiles }),
 				...(currentError && { error: currentError }),
+				sessionId: reviewId,
 				serverConfig: getServerConfig(gitUser),
+			});
+		} else if (url.pathname === "/api/sessions" && req.method === "GET") {
+			const sessions = [{
+				sessionId: reviewId,
+				mode: "review",
+				origin: options.origin ?? "pi",
+				project: (repoInfo as any)?.display || "Unknown",
+				slug: currentGitRef,
+				name: (repoInfo as any) ? `${(repoInfo as any).display} (${currentGitRef})` : "Code Review",
+				cwd: resolveAgentCwd(),
+				url: serverUrl,
+			}];
+			json(res, {
+				sessions,
+				count: 1,
+				maxSessions: 1,
 			});
 		} else if (url.pathname === "/api/diff/switch" && req.method === "POST") {
 			if (!hasLocalAccess) {

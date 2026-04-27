@@ -12,11 +12,9 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { AgentJobInfo, AgentJobEvent, AgentCapabilities } from '../types';
+import { getApiUrl } from '../utils/apiUrl';
 
 const POLL_INTERVAL_MS = 500;
-const STREAM_URL = '/api/agents/jobs/stream';
-const JOBS_URL = '/api/agents/jobs';
-const CAPABILITIES_URL = '/api/agents/capabilities';
 
 interface UseAgentJobsReturn {
   jobs: AgentJobInfo[];
@@ -43,7 +41,7 @@ export function useAgentJobs(
   useEffect(() => {
     if (!enabled) return;
 
-    fetch(CAPABILITIES_URL)
+    fetch(getApiUrl('/api/agents/capabilities'))
       .then((res) => res.json())
       .then((data) => {
         if (data && Array.isArray(data.providers)) {
@@ -63,7 +61,7 @@ export function useAgentJobs(
     fallbackRef.current = false;
 
     // --- SSE primary transport ---
-    const es = new EventSource(STREAM_URL);
+    const es = new EventSource(getApiUrl('/api/agents/jobs/stream'));
 
     es.onmessage = (event) => {
       if (cancelled) return;
@@ -128,8 +126,8 @@ export function useAgentJobs(
       try {
         const url =
           versionRef.current > 0
-            ? `${JOBS_URL}?since=${versionRef.current}`
-            : JOBS_URL;
+? `${getApiUrl('/api/agents/jobs')}?since=${versionRef.current}`
+      : getApiUrl('/api/agents/jobs');
 
         const res = await fetch(url);
 
@@ -170,7 +168,7 @@ export function useAgentJobs(
       fastMode?: boolean;
     }): Promise<AgentJobInfo | null> => {
       try {
-        const res = await fetch(JOBS_URL, {
+        const res = await fetch(getApiUrl('/api/agents/jobs'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(params),
@@ -187,7 +185,7 @@ export function useAgentJobs(
 
   const killJob = useCallback(async (id: string) => {
     try {
-      await fetch(`${JOBS_URL}/${encodeURIComponent(id)}`, {
+      await fetch(`${getApiUrl('/api/agents/jobs')}/${encodeURIComponent(id)}`, {
         method: 'DELETE',
       });
     } catch {
@@ -197,7 +195,7 @@ export function useAgentJobs(
 
   const killAll = useCallback(async () => {
     try {
-      await fetch(JOBS_URL, { method: 'DELETE' });
+      await fetch(getApiUrl('/api/agents/jobs'), { method: 'DELETE' });
     } catch {
       // SSE will reconcile
     }

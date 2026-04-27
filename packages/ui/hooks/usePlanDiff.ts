@@ -11,6 +11,7 @@ import {
   type PlanDiffBlock,
   type PlanDiffStats,
 } from "../utils/planDiffEngine";
+import { getApiUrl } from "../utils/apiUrl";
 
 export interface VersionInfo {
   version: number;
@@ -95,7 +96,7 @@ export function usePlanDiff(
       setIsSelectingVersion(true);
       setFetchingVersion(version);
       try {
-        const res = await fetch(`/api/plan/version?v=${version}`);
+        const res = await fetch(getApiUrl(`/api/plan/version?v=${version}`));
         if (!res.ok) {
           alert(`Failed to load version ${version}.`);
           return;
@@ -116,7 +117,7 @@ export function usePlanDiff(
   const fetchVersions = useCallback(async () => {
     setIsLoadingVersions(true);
     try {
-      const res = await fetch("/api/plan/versions");
+      const res = await fetch(getApiUrl("/api/plan/versions"));
       if (!res.ok) return;
       const data = (await res.json()) as {
         project: string;

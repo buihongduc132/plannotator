@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { dirname, resolve as resolvePath } from "node:path";
 
@@ -77,6 +78,7 @@ export async function startAnnotateServer(options: {
 
 	// Detect repo info (cached for this session)
 	const repoInfo = getRepoInfo();
+	const reviewId = randomUUID();
 
 	const externalAnnotations = createExternalAnnotationHandler("plan");
 
@@ -98,7 +100,24 @@ export async function startAnnotateServer(options: {
 				pasteApiUrl,
 				repoInfo,
 				projectRoot: options.folderPath || process.cwd(),
+				sessionId: reviewId,
 				serverConfig: getServerConfig(gitUser),
+			});
+		} else if (url.pathname === "/api/sessions" && req.method === "GET") {
+			const sessions = [{
+				sessionId: reviewId,
+				mode: options.mode || "annotate",
+				origin: options.origin ?? "pi",
+				project: (repoInfo as any)?.display || "Unknown",
+				slug: options.filePath.split('/').pop() || "markdown",
+				name: options.filePath.split('/').pop() || "Annotate",
+				cwd: process.cwd(),
+				url: `http://localhost:${port}`,
+			}];
+			json(res, {
+				sessions,
+				count: 1,
+				maxSessions: 1,
 			});
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			try {

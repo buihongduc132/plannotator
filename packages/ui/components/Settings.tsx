@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import type { Origin } from '@plannotator/shared/agents';
 import { configStore, useConfigValue } from '../config';
 import { loadDiffFont } from '../utils/diffFonts';
+import { getApiUrl } from '../utils/apiUrl';
 import { TaterSpritePullup } from './TaterSpritePullup';
 import { getIdentity, regenerateIdentity, setCustomIdentity } from '../utils/identity';
 import { GitUser } from '../icons/GitUser';
@@ -667,7 +668,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   useEffect(() => {
     if (obsidian.enabled && detectedVaults.length === 0 && !vaultsLoading) {
       setVaultsLoading(true);
-      fetch('/api/obsidian/vaults')
+      fetch(getApiUrl('/api/obsidian/vaults'))
         .then(res => res.json())
         .then((data: { vaults: string[] }) => {
           setDetectedVaults(data.vaults || []);

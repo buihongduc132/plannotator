@@ -57,6 +57,7 @@ import { useAnnotationDraft } from '@plannotator/ui/hooks/useAnnotationDraft';
 import { useArchive } from '@plannotator/ui/hooks/useArchive';
 import { useEditorAnnotations } from '@plannotator/ui/hooks/useEditorAnnotations';
 import { useExternalAnnotations } from '@plannotator/ui/hooks/useExternalAnnotations';
+import { useSessions } from '@plannotator/ui/hooks/useSessions';
 import { useExternalAnnotationHighlights } from '@plannotator/ui/hooks/useExternalAnnotationHighlights';
 import { buildPlanAgentInstructions } from '@plannotator/ui/utils/planAgentInstructions';
 import { hasNewSettings, markNewSettingsSeen } from '@plannotator/ui/utils/newSettingsHint';
@@ -145,6 +146,7 @@ const App: React.FC = () => {
     return () => ro.disconnect();
   }, []);
   const [isApiMode, setIsApiMode] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [origin, setOrigin] = useState<Origin | null>(null);
   const [gitUser, setGitUser] = useState<string | undefined>();
   const [isWSL, setIsWSL] = useState(false);
@@ -352,6 +354,7 @@ const [cwd, setCwd] = useState<string | null>(null);
 
   // Markdown file browser (also handles vault dirs via isVault flag)
   const fileBrowser = useFileBrowser();
+  const { sessions, isLoading: isLoadingSessions, fetchSessions, currentSessionId } = useSessions(sessionId, isApiMode);
   const vaultPath = useMemo(() => {
     if (!isVaultBrowserEnabled()) return '';
     return getEffectiveVaultPath(getObsidianSettings());
@@ -400,8 +403,8 @@ const [cwd, setCwd] = useState<string | null>(null);
   const handleFileBrowserSelect = React.useCallback((absolutePath: string, dirPath: string) => {
     const dirState = fileBrowser.dirs.find(d => d.path === dirPath);
     const buildUrl = dirState?.isVault
-      ? (path: string) => `/api/reference/obsidian/doc?vaultPath=${encodeURIComponent(dirPath)}&path=${encodeURIComponent(path)}`
-      : (path: string) => `/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(dirPath)}`;
+      ? (path: string) => getApiUrl(`/api/reference/obsidian/doc?vaultPath=${encodeURIComponent(dirPath)}&path=${encodeURIComponent(path)}`)
+      : (path: string) => getApiUrl(`/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(dirPath)}`);
     linkedDocHook.open(absolutePath, buildUrl, 'files');
     fileBrowser.setActiveFile(absolutePath);
   }, [linkedDocHook, fileBrowser]);
@@ -411,13 +414,13 @@ const [cwd, setCwd] = useState<string | null>(null);
     const activeDirState = fileBrowser.dirs.find(d => d.path === fileBrowser.activeDirPath);
     if (activeDirState?.isVault && fileBrowser.activeDirPath) {
       linkedDocHook.open(docPath, (path) =>
-        `/api/reference/obsidian/doc?vaultPath=${encodeURIComponent(fileBrowser.activeDirPath!)}&path=${encodeURIComponent(path)}`
+        getApiUrl(`/api/reference/obsidian/doc?vaultPath=${encodeURIComponent(fileBrowser.activeDirPath!)}&path=${encodeURIComponent(path)}`)
       );
     } else if (fileBrowser.activeFile && fileBrowser.activeDirPath) {
       // When viewing a file browser doc, resolve links relative to current file's directory
       const baseDir = linkedDocHook.filepath?.replace(/\/[^/]+$/, '') || fileBrowser.activeDirPath;
       linkedDocHook.open(docPath, (path) =>
-        `/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(baseDir)}`
+        getApiUrl(`/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(baseDir)}`)
       );
     } else {
       // Pass the current file's directory as base for relative path resolution
@@ -426,7 +429,7 @@ const [cwd, setCwd] = useState<string | null>(null);
         : imageBaseDir;
       if (baseDir) {
         linkedDocHook.open(docPath, (path) =>
-          `/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(baseDir)}`
+          getApiUrl(`/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(baseDir)}`)
         );
       } else {
         linkedDocHook.open(docPath);
@@ -710,6 +713,9 @@ const [cwd, setCwd] = useState<string | null>(null);
         }
         if (data.cwd) {
           setCwd(data.cwd);
+        }
+        if (data.sessionId) {
+          setSessionId(data.sessionId);
         }
         // Capture plan version history data
         if (data.previousPlan !== undefined) {
@@ -1648,6 +1654,9 @@ const [cwd, setCwd] = useState<string | null>(null);
                 onTabChange={(tab) => {
                   toggleSidebarTab(tab);
                   if (tab === 'archive' && !archive.archiveMode) archive.fetchPlans();
+                  if (tab === 'sessions') {
+                    // Handled by polling in useSessions
+                  }
                 }}
                 onClose={sidebar.close}
                 width={tocResize.width}
@@ -1683,6 +1692,10 @@ const [cwd, setCwd] = useState<string | null>(null);
                 selectedArchiveFile={archive.selectedFile}
                 onArchiveSelect={archive.select}
                 isLoadingArchive={archive.isLoading}
+                sessions={sessions}
+                isLoadingSessions={isLoadingSessions}
+                onFetchSessions={fetchSessions}
+                currentSessionId={currentSessionId}
               />
               <ResizeHandle {...tocResize.handleProps} className="hidden lg:block" side="left" />
             </>

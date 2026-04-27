@@ -10,6 +10,7 @@ import { useState, useCallback, useRef } from "react";
 import type { Annotation, ImageAttachment } from "../types";
 import type { ViewerHandle } from "../components/Viewer";
 import type { SidebarTab } from "./useSidebar";
+import { getApiUrl } from "../utils/apiUrl";
 
 export interface UseLinkedDocOptions {
   markdown: string;
@@ -89,7 +90,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
   const docCache = useRef<Map<string, CachedDocState>>(new Map());
 
   const defaultBuildUrl = useCallback(
-    (path: string) => `/api/doc?path=${encodeURIComponent(path)}`,
+    (path: string) => getApiUrl(`/api/doc?path=${encodeURIComponent(path)}`),
     []
   );
 

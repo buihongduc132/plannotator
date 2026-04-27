@@ -148,7 +148,8 @@ const RETRY_DELAY_MS = 500;
 export async function startReviewServer(
   options: ReviewServerOptions
 ): Promise<ReviewServerResult> {
-  const { htmlContent, origin, gitContext, sharingEnabled = true, shareBaseUrl, onReady, prMetadata, sessionId } = options;
+  const { htmlContent, origin, gitContext, sharingEnabled = true, shareBaseUrl, onReady, prMetadata } = options;
+  const sessionId = options.sessionId ?? crypto.randomUUID();
 
   const isPRMode = !!prMetadata;
   const hasLocalAccess = !!gitContext;
@@ -534,11 +535,31 @@ port,
               repoInfo,
               isWSL: wslFlag,
               cwd: getCwd(),
+              sessionId,
               ...(options.agentCwd && { agentCwd: options.agentCwd }),
               ...(isPRMode && { prMetadata, platformUser }),
               ...(isPRMode && initialViewedFiles.length > 0 && { viewedFiles: initialViewedFiles }),
               ...(currentError && { error: currentError }),
               serverConfig: getServerConfig(gitUser),
+            });
+          }
+
+          // API: List all active sessions (GET)
+          if (apiPath === "/api/sessions" && req.method === "GET") {
+            const sessions = [{
+              sessionId: sessionId ?? "review",
+              mode: "review",
+              origin: origin ?? "claude-code",
+              project: repoInfo?.display ?? "Unknown",
+              slug: currentGitRef,
+              name: repoInfo ? `${repoInfo.display} (${currentGitRef})` : "Code Review",
+              cwd: getCwd(),
+              url: serverUrl,
+            }];
+            return Response.json({
+              sessions,
+              count: 1,
+              maxSessions: 1,
             });
           }
 

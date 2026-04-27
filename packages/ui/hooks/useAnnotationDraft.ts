@@ -12,6 +12,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Annotation, ImageAttachment } from '../types';
 import { fromShareable, parseShareableImages } from '../utils/sharing';
 import type { ShareableAnnotation } from '../utils/sharing';
+import { getApiUrl } from '../utils/apiUrl';
 
 const DEBOUNCE_MS = 500;
 
@@ -75,7 +76,7 @@ export function useAnnotationDraft({
   useEffect(() => {
     if (!isApiMode || isSharedSession) return;
 
-    fetch('/api/draft')
+    fetch(getApiUrl('/api/draft'))
       .then(res => {
         if (!res.ok) return null;
         return res.json();
@@ -131,7 +132,7 @@ export function useAnnotationDraft({
         ts: Date.now(),
       };
 
-      fetch('/api/draft', {
+fetch(getApiUrl('/api/draft'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -159,7 +160,7 @@ export function useAnnotationDraft({
     setDraftBanner(null);
     draftDataRef.current = null;
 
-    fetch('/api/draft', { method: 'DELETE' }).catch(() => {
+    fetch(getApiUrl('/api/draft'), { method: 'DELETE' }).catch(() => {
       // Silent failure
     });
   }, []);

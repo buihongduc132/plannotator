@@ -17,8 +17,10 @@ import { OverlayScrollArea } from '@plannotator/ui/components/OverlayScrollArea'
 import type { AIChatEntry } from '../hooks/useAIChat';
 import type { AgentJobInfo, AgentCapabilities } from '@plannotator/ui/types';
 import type { DiffFile } from '../types';
+import { SessionBrowser } from '@plannotator/ui/components/sidebar/SessionBrowser';
+import type { SessionEntry } from '@plannotator/ui/hooks/useSessions';
 
-type ReviewSidebarTab = 'annotations' | 'ai' | 'agents';
+type ReviewSidebarTab = 'annotations' | 'ai' | 'agents' | 'sessions';
 
 const REVIEW_AGENTS_ENABLED = true;
 
@@ -61,6 +63,11 @@ interface ReviewSidebarProps {
   externalAnnotations?: Array<{ source?: string }>;
   onOpenJobDetail?: (jobId: string) => void;
   onOpenPRPanel?: (type: 'summary' | 'comments' | 'checks') => void;
+  // Session props
+  sessions?: SessionEntry[];
+  isLoadingSessions?: boolean;
+  onFetchSessions?: () => void;
+  currentSessionId?: string | null;
 }
 
 const SuggestionPreview: React.FC<{ code: string; originalCode?: string; language?: string }> = ({ code, originalCode, language }) => {
@@ -146,6 +153,10 @@ export const ReviewSidebar: React.FC<ReviewSidebarProps> = /* React.memo */({
   externalAnnotations,
   onOpenJobDetail,
   onOpenPRPanel,
+  sessions = [],
+  isLoadingSessions = false,
+  onFetchSessions,
+  currentSessionId,
 }) => {
   const totalCount = annotations.length + (editorAnnotations?.length ?? 0);
   const [copied, setCopied] = useState(false);
@@ -170,6 +181,7 @@ export const ReviewSidebar: React.FC<ReviewSidebarProps> = /* React.memo */({
       return;
     }
     if (tab === 'agents' && !REVIEW_AGENTS_ENABLED) return;
+    if (tab === 'sessions') onFetchSessions?.();
     setActiveTab(tab);
     onTabChange?.(tab);
   };
@@ -276,6 +288,23 @@ export const ReviewSidebar: React.FC<ReviewSidebarProps> = /* React.memo */({
                   )}
                 </button>
               )}
+
+              <button
+                onClick={() => handleTabChange('sessions')}
+                className={`relative flex items-center gap-1 px-2.5 py-1.5 rounded text-[10px] font-medium transition-colors duration-150 ${
+                  activeTab === 'sessions'
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                }`}
+                title="Active Sessions"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                </svg>
+                {sessions.length > 1 && activeTab !== 'sessions' && (
+                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-primary" />
+                )}
+              </button>
 
               {/* PR tabs moved to header — see App.tsx */}
             </div>
@@ -437,6 +466,15 @@ export const ReviewSidebar: React.FC<ReviewSidebarProps> = /* React.memo */({
               onKillAll={onAgentKillAll ?? (() => {})}
               externalAnnotations={externalAnnotations ?? []}
               onOpenJobDetail={onOpenJobDetail}
+            />
+          )}
+
+          {/* Sessions tab */}
+          {activeTab === 'sessions' && (
+            <SessionBrowser
+              sessions={sessions}
+              isLoading={isLoadingSessions}
+              currentSessionId={currentSessionId}
             />
           )}
 

@@ -110,9 +110,9 @@ export async function startAnnotateServer(
     gate = false,
     onReady,
     // REQ-14: sessionId and cwd enable /s/<sessionId>/api/... routing
-    sessionId,
     cwd,
   } = options;
+  const sessionId = options.sessionId ?? crypto.randomUUID();
 
   const isRemote = isRemoteSession();
   const configuredPort = getServerPort();
@@ -214,8 +214,28 @@ port,
               repoInfo,
               projectRoot: folderPath || cwd || process.cwd(),
               cwd,
+              sessionId,
               isWSL: wslFlag,
               serverConfig: getServerConfig(gitUser),
+            });
+          }
+
+          // API: List all active sessions (GET)
+          if (apiPath === "/api/sessions" && req.method === "GET") {
+            const sessions = [{
+              sessionId: sessionId ?? "annotate",
+              mode: mode,
+              origin: origin ?? "claude-code",
+              project: repoInfo?.display ?? "Unknown",
+              slug: filePath.split('/').pop() || "markdown",
+              name: filePath.split('/').pop() || "Annotate",
+              cwd: cwd || process.cwd(),
+              url: sessionId ? `${getServerUrl(server.port)}/s/${sessionId}` : getServerUrl(server.port),
+            }];
+            return Response.json({
+              sessions,
+              count: 1,
+              maxSessions: 1,
             });
           }
 

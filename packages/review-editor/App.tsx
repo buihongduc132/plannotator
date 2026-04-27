@@ -33,6 +33,7 @@ import { extractLinesFromPatch } from './utils/patchParser';
 import { isTypingTarget, useReviewSearch, type ReviewSearchMatch } from './hooks/useReviewSearch';
 import { useEditorAnnotations } from '@plannotator/ui/hooks/useEditorAnnotations';
 import { useExternalAnnotations } from '@plannotator/ui/hooks/useExternalAnnotations';
+import { useSessions } from '@plannotator/ui/hooks/useSessions';
 import { useAgentJobs } from '@plannotator/ui/hooks/useAgentJobs';
 import { exportEditorAnnotations } from '@plannotator/ui/utils/parser';
 import { ResizeHandle } from '@plannotator/ui/components/ResizeHandle';
@@ -183,6 +184,7 @@ const ReviewApp: React.FC = () => {
   const [sharingEnabled, setSharingEnabled] = useState(true);
   const [repoInfo, setRepoInfo] = useState<{ display: string; branch?: string } | null>(null);
   const [cwd, setCwd] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   useEffect(() => {
     document.title = repoInfo ? `${repoInfo.display} · Code Review` : "Code Review";
@@ -247,6 +249,7 @@ const ReviewApp: React.FC = () => {
   const [dockApi, setDockApi] = useState<DockviewApi | null>(null);
   const filesRef = useRef(files);
   filesRef.current = files;
+  const { sessions, isLoading: isLoadingSessions, fetchSessions, currentSessionId } = useSessions(sessionId, isApiMode);
   const needsInitialDiffPanel = useRef(true);
 
   // PR context (lifted from sidebar so center dock PR panels can access it)
@@ -722,6 +725,7 @@ const ReviewApp: React.FC = () => {
         if (data.agentCwd) setAgentCwd(data.agentCwd);
         if (data.sharingEnabled !== undefined) setSharingEnabled(data.sharingEnabled);
         if (data.repoInfo) setRepoInfo(data.repoInfo);
+        if (data.sessionId) setSessionId(data.sessionId);
         if (data.prMetadata) setPrMetadata(data.prMetadata);
         if (data.platformUser) setPlatformUser(data.platformUser);
         // Initialize viewed files from GitHub's state (set before draft restore so draft takes precedence)
@@ -1968,6 +1972,10 @@ if (data.cwd) setCwd(data.cwd);
             externalAnnotations={externalAnnotations}
             onOpenJobDetail={handleOpenJobDetail}
             onOpenPRPanel={handleOpenPRPanel}
+            sessions={sessions}
+            isLoadingSessions={isLoadingSessions}
+            onFetchSessions={fetchSessions}
+            currentSessionId={currentSessionId}
           />
         </div>
 

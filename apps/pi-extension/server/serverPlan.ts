@@ -206,6 +206,7 @@ export async function startPlanReviewServer(options: {
 					archivePlans,
 					sharingEnabled,
 					shareBaseUrl,
+					sessionId: reviewId,
 					serverConfig: getServerConfig(gitUser),
 				});
 			} else {
@@ -220,9 +221,26 @@ export async function startPlanReviewServer(options: {
 					pasteApiUrl,
 					repoInfo,
 					projectRoot: process.cwd(),
+					sessionId: reviewId,
 					serverConfig: getServerConfig(gitUser),
 				});
 			}
+		} else if (url.pathname === "/api/sessions" && req.method === "GET") {
+			const sessions = [{
+				sessionId: reviewId,
+				mode: options.mode === "archive" ? "archive" : "plan",
+				origin: options.origin ?? "pi",
+				project: project || "Unknown",
+				slug: slug || "archive",
+				name: project || "Plan Review",
+				cwd: process.cwd(),
+				url: `http://localhost:${port}`,
+			}];
+			json(res, {
+				sessions,
+				count: 1,
+				maxSessions: 1,
+			});
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			try {
 				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean };

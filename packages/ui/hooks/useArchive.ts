@@ -11,6 +11,7 @@ import type { UseLinkedDocReturn } from "./useLinkedDoc";
 import type { ViewerHandle } from "../components/Viewer";
 import type { Annotation } from "../types";
 import { getPlanSaveSettings } from "../utils/planSave";
+import { getApiUrl } from "../utils/apiUrl";
 
 export interface UseArchiveOptions {
   markdown: string;
@@ -84,7 +85,7 @@ export function useArchive(options: UseArchiveOptions): UseArchiveReturn {
     try {
       const params = new URLSearchParams({ filename });
       if (customPath) params.set("customPath", customPath);
-      const res = await fetch(`/api/archive/plan?${params}`);
+      const res = await fetch(getApiUrl(`/api/archive/plan?${params}`));
       if (!res.ok) return;
       const data = await res.json() as { markdown: string; filepath: string };
 
@@ -100,7 +101,7 @@ export function useArchive(options: UseArchiveOptions): UseArchiveReturn {
         const buildUrl = (f: string) => {
           const p = new URLSearchParams({ filename: f });
           if (customPath) p.set("customPath", customPath);
-          return `/api/archive/plan?${p}`;
+          return getApiUrl(`/api/archive/plan?${p}`);
         };
         linkedDocHook.open(filename, buildUrl, "archive");
         setSelectedFile(filename);
@@ -116,7 +117,7 @@ export function useArchive(options: UseArchiveOptions): UseArchiveReturn {
       const params = new URLSearchParams();
       if (customPath) params.set("customPath", customPath);
       const qs = params.toString();
-      const res = await fetch(`/api/archive/plans${qs ? `?${qs}` : ""}`);
+      const res = await fetch(getApiUrl(`/api/archive/plans${qs ? `?${qs}` : ""}`));
       if (!res.ok) return;
       const data = await res.json() as { plans: ArchivedPlan[] };
       setPlans(data.plans);
@@ -127,7 +128,7 @@ export function useArchive(options: UseArchiveOptions): UseArchiveReturn {
         setSelectedFile(first);
         const fetchParams = new URLSearchParams({ filename: first });
         if (customPath) fetchParams.set("customPath", customPath);
-        const planRes = await fetch(`/api/archive/plan?${fetchParams}`);
+        const planRes = await fetch(getApiUrl(`/api/archive/plan?${fetchParams}`));
         if (planRes.ok) {
           const planData = await planRes.json() as { markdown: string };
           setMarkdown(planData.markdown);
@@ -142,7 +143,7 @@ export function useArchive(options: UseArchiveOptions): UseArchiveReturn {
 
   const done = useCallback(async () => {
     try {
-      await fetch("/api/done", { method: "POST" });
+      await fetch(getApiUrl("/api/done"), { method: "POST" });
       setSubmitted("approved");
     } catch { /* ignore */ }
   }, [setSubmitted]);

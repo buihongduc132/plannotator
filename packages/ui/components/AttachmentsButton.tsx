@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { ImageThumbnail, getImageSrc } from './ImageThumbnail';
 import { ImageAnnotator } from './ImageAnnotator';
 import type { ImageAttachment } from '../types';
+import { getApiUrl } from '../utils/apiUrl';
 import { modKey } from '../utils/platform';
 
 /**
@@ -137,7 +138,7 @@ export const AttachmentsButton: React.FC<AttachmentsButtonProps> = ({
         formData.append('file', new File([blob], 'annotated.png', { type: 'image/png' }));
       }
 
-      const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      const res = await fetch(getApiUrl('/api/upload'), { method: 'POST', body: formData });
       const data = await res.json();
       if (data.path) {
         // If re-editing, remove old path first

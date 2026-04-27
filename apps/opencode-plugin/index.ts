@@ -447,6 +447,10 @@ submit_plan: tool({
             .boolean()
             .describe("When true, extract the latest assistant message from the current OpenCode session and use it as the plan. The plan argument is ignored.")
             .default(false),
+          name: tool.schema
+            .string()
+            .describe("Optional user-friendly name for the plan. Used in URLs and session listing for easy identification.")
+            .optional(),
         },
 
         async execute(args, context) {
@@ -543,6 +547,7 @@ const server = await startPlannotatorServer({
                   plan: planContent,
                   mode: "plan",
                   cwd: ctx.directory,
+                  name: args.name,
                 }),
               });
 
@@ -640,6 +645,7 @@ const server = await startPlannotatorServer({
               opencodeClient: ctx.client,
               sessionId: context.sessionID,
               cwd: ctx.directory,
+              name: args.name,
               onReady: async (url, isRemote, port) => {
                 handleServerReady(url, isRemote, port);
               },

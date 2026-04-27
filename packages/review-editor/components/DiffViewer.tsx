@@ -26,6 +26,7 @@ import {
   retryScrollToSearchMatch,
   swapActiveSearchHighlight,
 } from '../utils/reviewSearchHighlight';
+import { getApiUrl } from '@plannotator/ui/utils/apiUrl';
 
 interface PierreDiffContentProps {
   filePath: string;
@@ -278,8 +279,9 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
     setFileContents(null);
     const params = new URLSearchParams({ path: filePath });
     if (oldPath) params.set('oldPath', oldPath);
-    if (reviewBase) params.set('base', reviewBase);
+if (reviewBase) params.set('base', reviewBase);
     fetch(`/api/file-content?${params}`, { signal: controller.signal })
+fetch(getApiUrl(`/api/file-content?${params}`), { signal: controller.signal })
       .then(res => res.ok ? res.json() : null)
       .then((data: { oldContent: string | null; newContent: string | null } | null) => {
         if (data && (data.oldContent != null || data.newContent != null)) {

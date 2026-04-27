@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { CodeAnnotation } from '../types';
+import { getApiUrl } from '../utils/apiUrl';
 
 const DEBOUNCE_MS = 500;
 
@@ -55,7 +56,7 @@ export function useCodeAnnotationDraft({
   useEffect(() => {
     if (!isApiMode) return;
 
-    fetch('/api/draft')
+    fetch(getApiUrl('/api/draft'))
       .then(res => {
         if (!res.ok) return null;
         return res.json();
@@ -93,7 +94,7 @@ export function useCodeAnnotationDraft({
         ts: Date.now(),
       };
 
-      fetch('/api/draft', {
+fetch(getApiUrl('/api/draft'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -120,7 +121,7 @@ export function useCodeAnnotationDraft({
   const dismissDraft = useCallback(() => {
     setDraftBanner(null);
     draftDataRef.current = null;
-    fetch('/api/draft', { method: 'DELETE' }).catch(() => {});
+    fetch(getApiUrl('/api/draft'), { method: 'DELETE' }).catch(() => {});
   }, []);
 
   return { draftBanner, restoreDraft, dismissDraft };

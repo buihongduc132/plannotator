@@ -34,6 +34,10 @@ import { detectProjectName } from "@plannotator/server/project";
 import { openBrowser } from "@plannotator/server/browser";
 import { isRemoteSession, getServerUrl } from "@plannotator/server/remote";
 
+// @ts-ignore - Bun import attribute for text
+import planHtml from "../dist/index.html" with { type: "text" };
+const planHtmlContent = planHtml as unknown as string;
+
 process.on("exit", () => unregisterSession());
 process.on("SIGINT", () => { unregisterSession(); process.exit(0); });
 process.on("SIGTERM", () => { unregisterSession(); process.exit(0); });
@@ -65,6 +69,7 @@ async function main() {
   const { port, sessionId, stop } = await startPlannotatorServer({
     plan: "[Remote server] Use 'plannotator last' or 'plannotator annotate <file.md>' from any machine to start a session targeting this server",
     origin: "remote-server",
+    htmlContent: planHtmlContent,
     permissionMode: "auto-approve",
     mode: "archive",
     sharingEnabled: false,
