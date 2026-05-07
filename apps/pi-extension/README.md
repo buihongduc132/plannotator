@@ -178,6 +178,10 @@ Run `/plannotator-annotate <file.md>` to open any markdown file in the annotatio
 
 Run `/plannotator-last` to annotate the agent's most recent response. The message opens in the annotation UI where you can highlight text, add comments, and send structured feedback back to the agent.
 
+### Review last message as a plan
+
+Run `/plannotator-last-message` to open the agent's most recent response in the same plan review UI used by `plannotator_submit_plan`. Approval notes or rejection feedback are sent back into Pi as a human-triggered follow-up turn.
+
 ### Archive browser
 
 The Plannotator archive browser is available through the shared event API as `archive`, which opens the saved plan/decision browser for future callers. The orchestrator does not expose a dedicated archive command yet.
@@ -195,6 +199,7 @@ During execution, the agent marks completed steps with `[DONE:n]` markers. Progr
 | `/plannotator-review` | Open code review UI for current changes |
 | `/plannotator-annotate <file>` | Open markdown file in annotation UI |
 | `/plannotator-last` | Annotate the last assistant message |
+| `/plannotator-last-message` | Review the last assistant message in the submit-plan UI |
 
 ## Flags
 

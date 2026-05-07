@@ -15,6 +15,7 @@ import {
 } from "./server.js";
 import { openBrowser } from "./server/network.js";
 import { parsePRUrl, checkPRAuth, fetchPR } from "./server/pr.js";
+import { buildPiPlanSessionOptions } from "./plan-session.js";
 import {
 	getMRLabel,
 	getMRNumberLabel,
@@ -132,6 +133,7 @@ export async function startPlanReviewBrowserSession(
 		throw new Error("Plannotator browser review is unavailable in this session.");
 	}
 
+	const planSessionOptions = buildPiPlanSessionOptions(ctx);
 	const server = await startPlanReviewServer({
 		plan: planContent,
 		htmlContent: planHtmlContent,
@@ -139,6 +141,7 @@ export async function startPlanReviewBrowserSession(
 		sharingEnabled: process.env.PLANNOTATOR_SHARE !== "disabled",
 		shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
 		pasteApiUrl: process.env.PLANNOTATOR_PASTE_URL || undefined,
+		...planSessionOptions,
 	});
 
 	openBrowserForServer(server.url, ctx);
