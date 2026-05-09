@@ -168,4 +168,64 @@ describe("pi port selection", () => {
 			}
 		}
 	});
+
+	test("throws when all retries exhausted", async () => {
+		clearEnv();
+		process.env.PLANNOTATOR_PORT = "45455";
+
+		const server = createHttpServer((_req, res) => {
+			res.statusCode = 200;
+			res.end("ok");
+		});
+
+		const originalListen = server.listen.bind(server);
+		server.listen = ((...args: Parameters<typeof server.listen>) => {
+			const error = Object.assign(new Error("listen EADDRINUSE: address already in use"), {
+				code: "EADDRINUSE",
+			});
+			queueMicrotask(() => server.emit("error", error));
+			return server;
+		}) as typeof server.listen;
+
+		try {
+			await expect(listenOnPort(server)).rejects.toThrow("in use after 5 retries");
+		} finally {
+			server.listen = originalListen;
+			if (server.listening) {
+				await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+			}
+		}
+	});
+
+	test("throws non-EADDRINUSE errors immediately", async () => {
+		clearEnv();
+		process.env.PLANNOTATOR_PORT = "45456";
+
+		const server = createHttpServer((_req, res) => {
+			res.statusCode = 200;
+			res.end("ok");
+		});
+
+		const originalListen = server.listen.bind(server);
+		server.listen = ((..._args: Parameters<typeof server.listen>) => {
+			const error = new Error("permission denied");
+			queueMicrotask(() => server.emit("error", error));
+			return server;
+		}) as typeof server.listen;
+
+		try {
+			await expect(listenOnPort(server)).rejects.toThrow("permission denied");
+		} finally {
+			server.listen = originalListen;
+			if (server.listening) {
+				await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+			}
+		}
+	});
+
+	test("invalid port number falls back to random", () => {
+		clearEnv();
+		process.env.PLANNOTATOR_PORT = "not-a-number";
+		expect(getServerPort()).toEqual({ port: 0, portSource: "random" });
+	});
 });

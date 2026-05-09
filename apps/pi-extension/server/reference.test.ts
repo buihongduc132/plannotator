@@ -147,7 +147,7 @@ describe("handleObsidianDocRequest", () => {
 	});
 });
 
-describe("handleFileBrowserRequest", () => {
+	describe("handleFileBrowserRequest", () => {
 	test("returns 400 when dirPath is missing", () => {
 		const res = mockRes();
 		handleFileBrowserRequest(res, new URL("http://localhost/api/file-browser"));
@@ -169,5 +169,73 @@ describe("handleFileBrowserRequest", () => {
 		expect(res.statusCode).toBe(200);
 		const data = parseData(res);
 		expect(data.tree).toBeDefined();
+	});
+});
+
+describe("walkMarkdownFiles — recursive directory scanning", () => {
+	const tmp = mkdtempSync(join(tmpdir(), "plannotator-ref-test-"));
+
+	afterEach(() => {
+		try { rmSync(tmp, { recursive: true }); } catch {}
+	});
+
+	test("returns tree with nested markdown files", () => {
+		mkdirSync(join(tmp, "sub"), { recursive: true });
+		writeFileSync(join(tmp, "root.md"), "# Root");
+		writeFileSync(join(tmp, "sub", "nested.md"), "# Nested");
+		writeFileSync(join(tmp, "sub", "ignore.txt"), "not md");
+
+		const res = mockRes();
+		handleFileBrowserRequest(res, new URL(`http://localhost/api/file-browser?dirPath=${tmp}`));
+		expect(res.statusCode).toBe(200);
+		const data = parseData(res);
+		expect(data.tree).toBeDefined();
+		// Should find both .md files
+		const treeStr = JSON.stringify(data.tree);
+		expect(treeStr).toContain("root.md");
+		expect(treeStr).toContain("nested.md");
+		expect(treeStr).not.toContain("ignore.txt");
+	});
+
+	test("returns tree with .mdx files", () => {
+		mkdirSync(join(tmp, "docs"), { recursive: true });
+		writeFileSync(join(tmp, "docs", "page.mdx"), "# MDX Page");
+
+		const res = mockRes();
+		handleFileBrowserRequest(res, new URL(`http://localhost/api/file-browser?dirPath=${tmp}`));
+		expect(res.statusCode).toBe(200);
+		const data = parseData(res);
+		const treeStr = JSON.stringify(data.tree);
+		expect(treeStr).toContain("page.mdx");
+	});
+});
+
+describe("handleObsidianDocRequest — bare filename search", () => {
+	const tmp = mkdtempSync(join(tmpdir(), "plannotator-vault-test-"));
+
+	afterEach(() => {
+		try { rmSync(tmp, { recursive: true }); } catch {}
+	});
+
+	test("finds file by bare filename within vault", () => {
+		mkdirSync(join(tmp, "notes"), { recursive: true });
+		writeFileSync(join(tmp, "notes", "journal.md"), "# Journal");
+
+		const res = mockRes();
+		handleObsidianDocRequest(res, new URL(`http://localhost/api/reference/obsidian/doc?vaultPath=${tmp}&path=journal.md`));
+		expect(res.statusCode).toBe(200);
+		expect(parseData(res).markdown).toBe("# Journal");
+	});
+
+	test("returns 400 for ambiguous bare filename", () => {
+		mkdirSync(join(tmp, "a"), { recursive: true });
+		mkdirSync(join(tmp, "b"), { recursive: true });
+		writeFileSync(join(tmp, "a", "dup.md"), "# Dup A");
+		writeFileSync(join(tmp, "b", "dup.md"), "# Dup B");
+
+		const res = mockRes();
+		handleObsidianDocRequest(res, new URL(`http://localhost/api/reference/obsidian/doc?vaultPath=${tmp}&path=dup.md`));
+		expect(res.statusCode).toBe(400);
+		expect(parseData(res).error).toContain("Ambiguous");
 	});
 });
