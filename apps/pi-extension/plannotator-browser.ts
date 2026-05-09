@@ -367,6 +367,7 @@ export async function openCodeReview(
 		shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
 		pasteApiUrl: process.env.PLANNOTATOR_PASTE_URL || undefined,
 		onCleanup: worktreeCleanup,
+		sessionId: buildPiPlanSessionOptions(ctx).sessionId,
 	});
 
 	return openBrowserAndWait(server, ctx, server.waitForDecision);
@@ -409,6 +410,7 @@ export async function openMarkdownAnnotation(
 		sharingEnabled: process.env.PLANNOTATOR_SHARE !== "disabled",
 		shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
 		pasteApiUrl: process.env.PLANNOTATOR_PASTE_URL || undefined,
+		...buildPiPlanSessionOptions(ctx),
 	});
 
 	return openBrowserAndWait(server, ctx, server.waitForDecision);

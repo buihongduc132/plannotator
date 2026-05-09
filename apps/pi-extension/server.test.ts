@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
+import { startPlanReviewServer } from "./server";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getGitContext, runGitDiff, startReviewServer } from "./server";
@@ -79,6 +80,80 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+describe("pi plan review server", () => {
+  test("falls back to a random port when the configured port is already in use", async () => {
+    const homeDir = makeTempDir("plannotator-pi-home-");
+    process.env.HOME = homeDir;
+    process.env.PLANNOTATOR_REMOTE = "true";
+    delete process.env.PLANNOTATOR_PORT;
+
+    const firstServer = await startPlanReviewServer({
+      plan: "# First Plan\n\nKeep session one alive.",
+      origin: "pi",
+      htmlContent: "<!doctype html><html><body>plan</body></html>",
+    });
+
+    let secondServer: Awaited<ReturnType<typeof startPlanReviewServer>> | undefined;
+    try {
+      secondServer = await startPlanReviewServer({
+        plan: "# Second Plan\n\nOpen another session on the same machine.",
+        origin: "pi",
+        htmlContent: "<!doctype html><html><body>plan</body></html>",
+      });
+
+      expect(firstServer.portSource).toBe("remote-default");
+      expect(secondServer.portSource).toBe("remote-default");
+      expect(firstServer.port).toBeGreaterThan(0);
+      expect(secondServer.port).toBeGreaterThan(0);
+      expect(secondServer.port).not.toBe(firstServer.port);
+
+      const firstPlan = await fetch(`${firstServer.url}/api/plan`).then((response) => response.json()) as {
+        plan: string;
+      };
+      const secondPlan = await fetch(`${secondServer.url}/api/plan`).then((response) => response.json()) as {
+        plan: string;
+      };
+
+      expect(firstPlan.plan).toContain("First Plan");
+      expect(secondPlan.plan).toContain("Second Plan");
+    } finally {
+      secondServer?.stop();
+      firstServer.stop();
+      delete process.env.PLANNOTATOR_REMOTE;
+      delete process.env.PLANNOTATOR_PORT;
+    }
+  });
+
+  test("uses dynamic fallback when explicit PLANNOTATOR_PORT is occupied", async () => {
+    const homeDir = makeTempDir("plannotator-pi-home-");
+    process.env.HOME = homeDir;
+    process.env.PLANNOTATOR_PORT = String(await reservePort());
+
+    const firstServer = await startPlanReviewServer({
+      plan: "# Explicit Port One",
+      origin: "pi",
+      htmlContent: "<!doctype html><html><body>plan</body></html>",
+    });
+
+    let secondServer: Awaited<ReturnType<typeof startPlanReviewServer>> | undefined;
+    try {
+      secondServer = await startPlanReviewServer({
+        plan: "# Explicit Port Two",
+        origin: "pi",
+        htmlContent: "<!doctype html><html><body>plan</body></html>",
+      });
+
+      expect(firstServer.portSource).toBe("env");
+      expect(secondServer.portSource).toBe("env");
+      expect(secondServer.port).not.toBe(firstServer.port);
+      expect(secondServer.port).toBeGreaterThan(0);
+    } finally {
+      secondServer?.stop();
+      firstServer.stop();
+    }
+  });
 });
 
 describe("pi review server", () => {

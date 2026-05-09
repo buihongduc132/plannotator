@@ -660,7 +660,6 @@ const [cwd, setCwd] = useState<string | null>(null);
         return res.json();
       })
 .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'archive'; filePath?: string; sourceInfo?: string; gate?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; isWSL?: boolean; serverConfig?: { displayName?: string; gitUser?: string } }) => {
-.then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'archive'; filePath?: string; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; cwd?: string; isWSL?: boolean; serverConfig?: { displayName?: string; gitUser?: string } }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
         // gitUser drives the "Use git name" button in Settings; stays undefined (button hidden) when unavailable

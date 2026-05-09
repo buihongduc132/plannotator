@@ -520,8 +520,7 @@ cwd,
         style={{ WebkitTouchCallout: 'none' } as React.CSSProperties}
       >
         {/* Repo info + plan diff badge + demo badge + linked doc badge + archive badge - top left */}
-{(repoInfo || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo || sourceInfo) && (
-{(repoInfo || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo || cwd) && (
+{(repoInfo || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo || sourceInfo || cwd) && (
           <div data-print-hide className="absolute top-3 left-3 md:top-4 md:left-5">
             <DocBadges
               layout="column"

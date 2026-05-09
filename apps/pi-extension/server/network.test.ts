@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { getServerHostname, getServerPort, isRemoteSession } from "./network";
+import { createServer as createHttpServer } from "node:http";
+import { getServerPort, isRemoteSession, listenOnPort } from "./network";
 
 const savedEnv: Record<string, string | undefined> = {};
 const envKeys = ["PLANNOTATOR_REMOTE", "PLANNOTATOR_PORT", "SSH_TTY", "SSH_CONNECTION"];
@@ -93,17 +94,78 @@ describe("pi port selection", () => {
 		process.env.PLANNOTATOR_PORT = "9999";
 		expect(getServerPort()).toEqual({ port: 9999, portSource: "env" });
 	});
-});
 
-describe("pi server hostname", () => {
-	test("binds local sessions to loopback", () => {
+	test("falls back to a random port when remote default port is already in use", async () => {
 		clearEnv();
-		expect(getServerHostname()).toBe("127.0.0.1");
+		process.env.PLANNOTATOR_REMOTE = "true";
+
+		const server = createHttpServer((_req, res) => {
+			res.statusCode = 200;
+			res.end("ok");
+		});
+
+		const originalListen = server.listen.bind(server);
+		let attemptCount = 0;
+		server.listen = ((...args: Parameters<typeof server.listen>) => {
+			attemptCount += 1;
+			if (attemptCount === 1) {
+				const error = Object.assign(new Error("listen EADDRINUSE: address already in use"), {
+					code: "EADDRINUSE",
+				});
+				queueMicrotask(() => server.emit("error", error));
+				return server;
+			}
+			return originalListen(...args);
+		}) as typeof server.listen;
+
+		try {
+			const result = await listenOnPort(server);
+			expect(attemptCount).toBe(2);
+			expect(result.portSource).toBe("remote-default");
+			expect(result.port).not.toBe(19432);
+			expect(result.port).toBeGreaterThan(0);
+		} finally {
+			server.listen = originalListen;
+			if (server.listening) {
+				await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+			}
+		}
 	});
 
-	test("binds remote sessions to all interfaces", () => {
+	test("falls back to a random port when configured PLANNOTATOR_PORT is already in use", async () => {
 		clearEnv();
-		process.env.PLANNOTATOR_REMOTE = "1";
-		expect(getServerHostname()).toBe("0.0.0.0");
+		process.env.PLANNOTATOR_PORT = "45454";
+
+		const server = createHttpServer((_req, res) => {
+			res.statusCode = 200;
+			res.end("ok");
+		});
+
+		const originalListen = server.listen.bind(server);
+		let attemptedPort: number | undefined;
+		server.listen = ((port: number, ...args: any[]) => {
+			attemptedPort = port;
+			if (port === 45454) {
+				const error = Object.assign(new Error("listen EADDRINUSE: address already in use"), {
+					code: "EADDRINUSE",
+				});
+				queueMicrotask(() => server.emit("error", error));
+				return server;
+			}
+			return originalListen(port as any, ...args);
+		}) as typeof server.listen;
+
+		try {
+			const result = await listenOnPort(server);
+			expect(attemptedPort).not.toBeUndefined();
+			expect(result.portSource).toBe("env");
+			expect(result.port).not.toBe(45454);
+			expect(result.port).toBeGreaterThan(0);
+		} finally {
+			server.listen = originalListen;
+			if (server.listening) {
+				await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+			}
+		}
 	});
 });

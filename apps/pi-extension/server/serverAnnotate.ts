@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { dirname, resolve as resolvePath } from "node:path";
 
@@ -45,6 +44,8 @@ export async function startAnnotateServer(options: {
 	pasteApiUrl?: string;
 	sourceInfo?: string;
 	gate?: boolean;
+	sessionId?: string;
+	cwd?: string;
 }): Promise<AnnotateServerResult> {
 	const gitUser = detectGitUser();
 	const sharingEnabled =
@@ -53,6 +54,8 @@ export async function startAnnotateServer(options: {
 		(options.shareBaseUrl ?? process.env.PLANNOTATOR_SHARE_URL) || undefined;
 	const pasteApiUrl =
 		(options.pasteApiUrl ?? process.env.PLANNOTATOR_PASTE_URL) || undefined;
+	const sessionId = options.sessionId;
+	const sessionCwd = options.cwd;
 
 	let resolveDecision!: (result: {
 		feedback: string;
@@ -69,25 +72,42 @@ export async function startAnnotateServer(options: {
 		resolveDecision = r;
 	});
 
-	// Folder annotation has no stable markdown body, so key drafts by folder path instead.
-	const draftSource =
-		options.mode === "annotate-folder" && options.folderPath
-			? `folder:${resolvePath(options.folderPath)}`
-			: options.markdown;
-	const draftKey = contentHash(draftSource);
+	const parseSessionPath = (pathname: string): { sessionId: string | null; apiPath: string } => {
+		const match = /^\/s\/([^/]+)(\/api\/.*)$/.exec(pathname);
+		if (match) return { sessionId: match[1], apiPath: match[2] };
+		return { sessionId: null, apiPath: pathname };
+	};
 
-	// Detect repo info (cached for this session)
+	const draftKey = contentHash(options.markdown);
 	const repoInfo = getRepoInfo();
-	const reviewId = randomUUID();
-
 	const externalAnnotations = createExternalAnnotationHandler("plan");
 
+	let port = 0;
 	const server = createServer(async (req, res) => {
 		const url = requestUrl(req);
+		const { sessionId: routeSessionId, apiPath } = sessionId
+			? parseSessionPath(url.pathname)
+			: { sessionId: null, apiPath: url.pathname };
+
+		if (sessionId && routeSessionId && routeSessionId !== sessionId) {
+			json(
+				res,
+				{
+					error: "Session mismatch",
+					message: `URL session "${routeSessionId}" does not match expected "${sessionId}"`,
+				},
+				403,
+			);
+			return;
+		}
+		if (sessionId && apiPath.startsWith("/s/")) {
+			json(res, { error: "Session mismatch" }, 403);
+			return;
+		}
 
 		if (await externalAnnotations.handle(req, res, url)) return;
 
-		if (url.pathname === "/api/plan" && req.method === "GET") {
+		if (apiPath === "/api/plan" && req.method === "GET") {
 			json(res, {
 				plan: options.markdown,
 				origin: options.origin ?? "pi",
@@ -99,27 +119,30 @@ export async function startAnnotateServer(options: {
 				shareBaseUrl,
 				pasteApiUrl,
 				repoInfo,
-				projectRoot: options.folderPath || process.cwd(),
-				sessionId: reviewId,
+				projectRoot: options.folderPath || sessionCwd || process.cwd(),
+				cwd: sessionCwd,
+				sessionId,
 				serverConfig: getServerConfig(gitUser),
 			});
-		} else if (url.pathname === "/api/sessions" && req.method === "GET") {
-			const sessions = [{
-				sessionId: reviewId,
-				mode: options.mode || "annotate",
-				origin: options.origin ?? "pi",
-				project: (repoInfo as any)?.display || "Unknown",
-				slug: options.filePath.split('/').pop() || "markdown",
-				name: options.filePath.split('/').pop() || "Annotate",
-				cwd: process.cwd(),
-				url: `http://localhost:${port}`,
-			}];
+		} else if (apiPath === "/api/sessions" && req.method === "GET") {
 			json(res, {
-				sessions,
+				sessions: [
+					{
+						sessionId: sessionId ?? "annotate",
+						mode: options.mode || "annotate",
+						origin: options.origin ?? "pi",
+						project: repoInfo?.display ?? "Unknown",
+						slug: options.filePath.split("/").pop() || "markdown",
+						name: options.filePath.split("/").pop() || "Annotate",
+						cwd: sessionCwd || process.cwd(),
+						url: sessionId
+							? `http://localhost:${port}/s/${sessionId}`
+							: `http://localhost:${port}`,
+					},
+				],
 				count: 1,
-				maxSessions: 1,
 			});
-		} else if (url.pathname === "/api/config" && req.method === "POST") {
+		} else if (apiPath === "/api/config" && req.method === "POST") {
 			try {
 				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean };
 				const toSave: Record<string, unknown> = {};
@@ -131,41 +154,44 @@ export async function startAnnotateServer(options: {
 			} catch {
 				json(res, { error: "Invalid request" }, 400);
 			}
-		} else if (url.pathname === "/api/image") {
+		} else if (apiPath === "/api/image") {
 			handleImageRequest(res, url);
-		} else if (url.pathname === "/api/upload" && req.method === "POST") {
+		} else if (apiPath === "/api/upload" && req.method === "POST") {
 			await handleUploadRequest(req, res);
-		} else if (url.pathname === "/api/draft") {
-			await handleDraftRequest(req, res, draftKey);
-		} else if (url.pathname === "/api/doc" && req.method === "GET") {
-			// Inject source file's directory as base for relative path resolution.
-			// Skip for URL annotations — there's no local directory to resolve against.
-			if (!url.searchParams.has("base") && options.filePath && !/^https?:\/\//i.test(options.filePath)) {
+		} else if (apiPath === "/api/draft") {
+			await handleDraftRequest(
+				req,
+				res,
+				draftKey,
+				sessionId && sessionCwd ? { sessionId, cwd: sessionCwd } : undefined,
+			);
+		} else if (apiPath === "/api/doc" && req.method === "GET") {
+			if (!url.searchParams.has("base") && options.filePath) {
 				url.searchParams.set("base", dirname(resolvePath(options.filePath)));
 			}
 			handleDocRequest(res, url);
-		} else if (url.pathname === "/api/obsidian/vaults") {
+		} else if (apiPath === "/api/obsidian/vaults") {
 			handleObsidianVaultsRequest(res);
-		} else if (url.pathname === "/api/reference/obsidian/files" && req.method === "GET") {
+		} else if (apiPath === "/api/reference/obsidian/files" && req.method === "GET") {
 			handleObsidianFilesRequest(res, url);
-		} else if (url.pathname === "/api/reference/obsidian/doc" && req.method === "GET") {
+		} else if (apiPath === "/api/reference/obsidian/doc" && req.method === "GET") {
 			handleObsidianDocRequest(res, url);
-		} else if (url.pathname === "/api/reference/files" && req.method === "GET") {
+		} else if (apiPath === "/api/reference/files" && req.method === "GET") {
 			handleFileBrowserRequest(res, url);
-		} else if (url.pathname === "/favicon.svg") {
+		} else if (apiPath === "/favicon.svg" || url.pathname === "/favicon.svg") {
 			handleFavicon(res);
-		} else if (url.pathname === "/api/exit" && req.method === "POST") {
-			deleteDraft(draftKey);
+		} else if (apiPath === "/api/exit" && req.method === "POST") {
+			deleteDraft(draftKey, sessionId && sessionCwd ? { sessionId, cwd: sessionCwd } : undefined);
 			resolveDecision({ feedback: "", annotations: [], exit: true });
 			json(res, { ok: true });
-		} else if (url.pathname === "/api/approve" && req.method === "POST") {
-			deleteDraft(draftKey);
+		} else if (apiPath === "/api/approve" && req.method === "POST") {
+			deleteDraft(draftKey, sessionId && sessionCwd ? { sessionId, cwd: sessionCwd } : undefined);
 			resolveDecision({ feedback: "", annotations: [], approved: true });
 			json(res, { ok: true });
-		} else if (url.pathname === "/api/feedback" && req.method === "POST") {
+		} else if (apiPath === "/api/feedback" && req.method === "POST") {
 			try {
 				const body = await parseBody(req);
-				deleteDraft(draftKey);
+				deleteDraft(draftKey, sessionId && sessionCwd ? { sessionId, cwd: sessionCwd } : undefined);
 				resolveDecision({
 					feedback: (body.feedback as string) || "",
 					annotations: (body.annotations as unknown[]) || [],
@@ -180,12 +206,13 @@ export async function startAnnotateServer(options: {
 		}
 	});
 
-	const { port, portSource } = await listenOnPort(server);
+	const result = await listenOnPort(server);
+	port = result.port;
 
 	return {
 		port,
-		portSource,
-		url: `http://localhost:${port}`,
+		portSource: result.portSource,
+		url: sessionId ? `http://localhost:${port}/s/${sessionId}` : `http://localhost:${port}`,
 		waitForDecision: () => decisionPromise,
 		stop: () => server.close(),
 	};

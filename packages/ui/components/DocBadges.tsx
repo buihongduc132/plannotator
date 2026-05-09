@@ -50,8 +50,7 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
   // will truly produce visible output to avoid an empty wrapper div.
   const anything = isRow
     ? (!linkedDocInfo && ((hasPreviousVersion && planDiffStats) || archiveInfo))
-: repoInfo || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo || sourceInfo;
-: repoInfo || cwd || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo;
+: repoInfo || cwd || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo || sourceInfo;
   if (!anything) return null;
 
   // Row layout: single horizontal line. Column layout: stacked rows.

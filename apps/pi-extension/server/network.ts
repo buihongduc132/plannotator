@@ -5,10 +5,10 @@
 
 import { spawn } from "node:child_process";
 import type { Server } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import { release } from "node:os";
 
 const DEFAULT_REMOTE_PORT = 19432;
-const LOOPBACK_HOST = "127.0.0.1";
 
 /**
  * Check if running in a remote session (SSH, devcontainer, etc.)
@@ -68,30 +68,60 @@ export function getServerPort(): {
 	return { port: 0, portSource: "random" };
 }
 
-export function getServerHostname(): string {
-	return isRemoteSession() ? "0.0.0.0" : LOOPBACK_HOST;
-}
-
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 500;
+
+async function isPortAvailable(port: number, host: string): Promise<boolean> {
+	if (port === 0) return true;
+
+	return await new Promise<boolean>((resolve) => {
+		const probe = createNetServer();
+		const finish = (available: boolean) => {
+			probe.removeAllListeners();
+			if (probe.listening) {
+				probe.close(() => resolve(available));
+				return;
+			}
+			resolve(available);
+		};
+
+		probe.once("error", (err: NodeJS.ErrnoException) => {
+			if (err.code === "EADDRINUSE") {
+				finish(false);
+				return;
+			}
+			finish(false);
+		});
+
+		probe.listen(port, host, () => finish(true));
+	});
+}
 
 export async function listenOnPort(
 	server: Server,
 ): Promise<{ port: number; portSource: "env" | "remote-default" | "random" }> {
 	const result = getServerPort();
+	const host = isRemoteSession() ? "0.0.0.0" : "127.0.0.1";
 
 	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+		const port = attempt === 1 ? result.port : 0;
+		if (!(await isPortAvailable(port, host))) {
+			if (attempt < MAX_RETRIES) {
+				await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+				continue;
+			}
+			const hint = isRemoteSession()
+				? " (set PLANNOTATOR_PORT to use a different port)"
+				: "";
+			throw new Error(`Port ${result.port} in use after ${MAX_RETRIES} retries${hint}`);
+		}
 		try {
 			await new Promise<void>((resolve, reject) => {
 				server.once("error", reject);
-				server.listen(
-					result.port,
-					getServerHostname(),
-					() => {
-						server.removeListener("error", reject);
-						resolve();
-					},
-				);
+				server.listen(port, host, () => {
+					server.removeListener("error", reject);
+					resolve();
+				});
 			});
 			const addr = server.address() as { port: number };
 			return { port: addr.port, portSource: result.portSource };
@@ -99,6 +129,11 @@ export async function listenOnPort(
 			const isAddressInUse =
 				err instanceof Error && err.message.includes("EADDRINUSE");
 			if (isAddressInUse && attempt < MAX_RETRIES) {
+				if (server.listening) {
+					await new Promise<void>((resolve, reject) =>
+						server.close((closeErr) => (closeErr ? reject(closeErr) : resolve())),
+					);
+				}
 				await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
 				continue;
 			}
@@ -114,7 +149,6 @@ export async function listenOnPort(
 		}
 	}
 
-	// Unreachable, but satisfies TypeScript
 	throw new Error("Failed to bind port");
 }
 

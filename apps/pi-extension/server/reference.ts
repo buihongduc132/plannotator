@@ -22,18 +22,12 @@ import {
 	FILE_BROWSER_EXCLUDED,
 } from "../generated/reference-common.js";
 import { detectObsidianVaults } from "../generated/integrations-common.js";
-import {
-	isAbsoluteUserPath,
-	resolveMarkdownFile,
-	resolveUserPath,
-	isWithinProjectRoot,
-} from "../generated/resolve-file.js";
-import { htmlToMarkdown } from "../generated/html-to-markdown.js";
+import { resolveMarkdownFile } from "../generated/resolve-file.js";
 
 type Res = ServerResponse;
 
-/** Recursively walk a directory collecting files by extension, skipping ignored dirs. */
-function walkMarkdownFiles(dir: string, root: string, results: string[], extensions: RegExp = /\.(mdx?|html?)$/i): void {
+/** Recursively walk a directory collecting markdown files, skipping ignored dirs. */
+function walkMarkdownFiles(dir: string, root: string, results: string[]): void {
 	let entries: Dirent[];
 	try {
 		entries = readdirSync(dir, { withFileTypes: true }) as Dirent[];
@@ -43,8 +37,8 @@ function walkMarkdownFiles(dir: string, root: string, results: string[], extensi
 	for (const entry of entries) {
 		if (entry.isDirectory()) {
 			if (FILE_BROWSER_EXCLUDED.includes(entry.name + "/")) continue;
-			walkMarkdownFiles(join(dir, entry.name), root, results, extensions);
-		} else if (entry.isFile() && extensions.test(entry.name)) {
+			walkMarkdownFiles(join(dir, entry.name), root, results);
+		} else if (entry.isFile() && /\.mdx?$/i.test(entry.name)) {
 			const relative = join(dir, entry.name)
 				.slice(root.length + 1)
 				.replace(/\\/g, "/");
@@ -61,23 +55,17 @@ export function handleDocRequest(res: Res, url: URL): void {
 		return;
 	}
 
-	// Try resolving relative to base directory first (used by annotate mode).
-	// No isWithinProjectRoot check here — intentional, matches pre-existing
-	// markdown behavior. The base param is set server-side by the annotate
-	// server (see serverAnnotate.ts /api/doc route). The standalone HTML
-	// block below (no base) retains its cwd-based containment check.
+	// Try resolving relative to base directory first (used by annotate mode)
 	const base = url.searchParams.get("base");
-	const resolvedBase = base ? resolveUserPath(base) : null;
 	if (
-		resolvedBase &&
-		!isAbsoluteUserPath(requestedPath) &&
-		/\.(mdx?|html?)$/i.test(requestedPath)
+		base &&
+		!requestedPath.startsWith("/") &&
+		/\.mdx?$/i.test(requestedPath)
 	) {
-		const fromBase = resolveUserPath(requestedPath, resolvedBase);
+		const fromBase = resolvePath(base, requestedPath);
 		try {
 			if (existsSync(fromBase)) {
-				const raw = readFileSync(fromBase, "utf-8");
-				const markdown = /\.html?$/i.test(requestedPath) ? htmlToMarkdown(raw) : raw;
+				const markdown = readFileSync(fromBase, "utf-8");
 				json(res, { markdown, filepath: fromBase });
 				return;
 			}
@@ -86,25 +74,7 @@ export function handleDocRequest(res: Res, url: URL): void {
 		}
 	}
 
-	// HTML files: resolve directly (not via resolveMarkdownFile which only handles .md/.mdx)
 	const projectRoot = process.cwd();
-	if (/\.html?$/i.test(requestedPath)) {
-		const resolvedHtml = resolveUserPath(requestedPath, resolvedBase || projectRoot);
-		if (!isWithinProjectRoot(resolvedHtml, projectRoot)) {
-			json(res, { error: "Access denied: path is outside project root" }, 403);
-			return;
-		}
-		try {
-			if (existsSync(resolvedHtml)) {
-				const html = readFileSync(resolvedHtml, "utf-8");
-				json(res, { markdown: htmlToMarkdown(html), filepath: resolvedHtml });
-				return;
-			}
-		} catch { /* fall through to 404 */ }
-		json(res, { error: `File not found: ${requestedPath}` }, 404);
-		return;
-	}
-
 	const result = resolveMarkdownFile(requestedPath, projectRoot);
 
 	if (result.kind === "ambiguous") {
@@ -142,14 +112,14 @@ export function handleObsidianFilesRequest(res: Res, url: URL): void {
 		json(res, { error: "Missing vaultPath parameter" }, 400);
 		return;
 	}
-	const resolvedVault = resolveUserPath(vaultPath);
+	const resolvedVault = resolvePath(vaultPath);
 	if (!existsSync(resolvedVault) || !statSync(resolvedVault).isDirectory()) {
 		json(res, { error: "Invalid vault path" }, 400);
 		return;
 	}
 	try {
 		const files: string[] = [];
-		walkMarkdownFiles(resolvedVault, resolvedVault, files, /\.mdx?$/i);
+		walkMarkdownFiles(resolvedVault, resolvedVault, files);
 		files.sort();
 		json(res, { tree: buildFileTree(files) });
 	} catch {
@@ -168,13 +138,13 @@ export function handleObsidianDocRequest(res: Res, url: URL): void {
 		json(res, { error: "Only markdown files are supported" }, 400);
 		return;
 	}
-	const resolvedVault = resolveUserPath(vaultPath);
+	const resolvedVault = resolvePath(vaultPath);
 	let resolvedFile = resolvePath(resolvedVault, filePath);
 
 	// Bare filename search within vault
 	if (!existsSync(resolvedFile) && !filePath.includes("/")) {
 		const files: string[] = [];
-		walkMarkdownFiles(resolvedVault, resolvedVault, files, /\.mdx?$/i);
+		walkMarkdownFiles(resolvedVault, resolvedVault, files);
 		const matches = files.filter(
 			(f) => f.split("/").pop()!.toLowerCase() === filePath.toLowerCase(),
 		);
@@ -220,7 +190,7 @@ export function handleFileBrowserRequest(res: Res, url: URL): void {
 		json(res, { error: "Missing dirPath parameter" }, 400);
 		return;
 	}
-	const resolvedDir = resolveUserPath(dirPath);
+	const resolvedDir = resolvePath(dirPath);
 	if (!existsSync(resolvedDir) || !statSync(resolvedDir).isDirectory()) {
 		json(res, { error: "Invalid directory path" }, 400);
 		return;

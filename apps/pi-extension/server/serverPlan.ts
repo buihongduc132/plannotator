@@ -129,19 +129,28 @@ export async function startPlanReviewServer(options: {
 	const reviewId = randomUUID();
 	let resolveDecision!: (result: PlanReviewDecision) => void;
 	const decisionListeners = new Set<(result: PlanReviewDecision) => void | Promise<void>>();
+	const sseClients = new Set<import("node:http").ServerResponse>();
 	let decisionSettled = false;
+	let decisionResult: PlanReviewDecision | null = null;
 	const decisionPromise = new Promise<PlanReviewDecision>((r) => {
 		resolveDecision = r;
 	});
 	const publishDecision = (result: PlanReviewDecision): boolean => {
 		if (decisionSettled) return false;
 		decisionSettled = true;
+		decisionResult = result;
 		resolveDecision(result);
 		for (const listener of decisionListeners) {
 			Promise.resolve(listener(result)).catch((error) => {
 				console.error("[Plan Review] Decision listener failed:", error);
 			});
 		}
+		const payload = `event: decision\ndata: ${JSON.stringify(result)}\n\n`;
+		for (const client of sseClients) {
+			client.write(payload);
+			client.end();
+		}
+		sseClients.clear();
 		return true;
 	};
 
@@ -179,6 +188,77 @@ export async function startPlanReviewServer(options: {
 				return;
 			}
 			json(res, { markdown, filepath: filename });
+		} else if (url.pathname === "/api/sessions" && req.method === "POST") {
+			try {
+				const body = (await parseBody(req)) as {
+					plan?: string;
+					mode?: string;
+					name?: string;
+				};
+				if (!body.plan) {
+					json(res, { error: "plan is required" }, 400);
+					return;
+				}
+				const createdSlug = generateSlug(body.plan);
+				const createdProject = detectProjectName();
+				saveToHistory(createdProject, createdSlug, body.plan);
+				const sessionId = randomUUID();
+				json(res, {
+					sessionId,
+					url: `http://localhost:${port}/s/${sessionId}`,
+					plan: body.plan,
+					slug: createdSlug,
+					name: body.name ?? null,
+					mode: body.mode ?? "plan",
+					project: createdProject,
+				});
+			} catch (error) {
+				json(
+					res,
+					{ error: error instanceof Error ? error.message : "Failed to create session" },
+					500,
+				);
+			}
+		} else if (url.pathname === "/api/sessions" && req.method === "GET") {
+			json(res, {
+				sessions: [
+					{
+						sessionId: reviewId,
+						mode: options.mode ?? "plan",
+						origin: options.origin ?? "pi",
+						project,
+						slug,
+						name: null,
+						cwd: process.cwd(),
+						url: `http://localhost:${port}/s/${reviewId}`,
+					},
+				],
+				count: 1,
+			});
+		} else if (url.pathname === "/api/plans" && req.method === "GET") {
+			json(res, { plans: listProjectPlans(project).map((entry) => ({ ...entry, project })) });
+		} else if (url.pathname === "/api/decision" && req.method === "GET") {
+			if (!decisionSettled) {
+				json(res, { pending: true });
+				return;
+			}
+			json(res, decisionResult ?? { pending: true });
+		} else if (url.pathname === "/api/decision/stream" && req.method === "GET") {
+			res.writeHead(200, {
+				"Content-Type": "text/event-stream",
+				"Cache-Control": "no-cache, no-transform",
+				Connection: "keep-alive",
+			});
+			res.write("event: connected\ndata: {}\n\n");
+			if (decisionSettled && decisionResult) {
+				res.write(`event: decision\ndata: ${JSON.stringify(decisionResult)}\n\n`);
+				res.end();
+				return;
+			}
+			sseClients.add(res);
+			req.on("close", () => {
+				sseClients.delete(res);
+			});
 		} else if (url.pathname === "/api/plan/version") {
 			const vParam = url.searchParams.get("v");
 			if (!vParam) {
@@ -207,7 +287,6 @@ export async function startPlanReviewServer(options: {
 					archivePlans,
 					sharingEnabled,
 					shareBaseUrl,
-					sessionId: reviewId,
 					serverConfig: getServerConfig(gitUser),
 				});
 			} else {
@@ -222,120 +301,9 @@ export async function startPlanReviewServer(options: {
 					pasteApiUrl,
 					repoInfo,
 					projectRoot: process.cwd(),
-					sessionId: reviewId,
 					serverConfig: getServerConfig(gitUser),
 				});
 			}
-		// --- API: Create a new plan session (HTTP, for remote/client mode) ---
-		} else if (url.pathname === "/api/sessions" && req.method === "POST") {
-			try {
-				const body = (await parseBody(req)) as { plan?: string; mode?: string; cwd?: string; name?: string };
-				if (!body.plan) {
-					json(res, { error: "plan is required" }, 400);
-					return;
-				}
-				const sid = randomUUID();
-				const httpSlug = generateSlug(body.plan);
-				const httpProject = detectProjectName();
-				saveToHistory(httpProject, httpSlug, body.plan);
-				json(res, {
-					sessionId: sid,
-					url: `http://localhost:${port}/s/${sid}`,
-					plan: body.plan.slice(0, 200),
-					slug: httpSlug,
-					name: body.name ?? null,
-					mode: body.mode ?? "plan",
-					project: httpProject,
-				});
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				console.error("[/api/sessions POST] Error:", err);
-				json(res, { error: message }, 500);
-			}
-		// --- API: Poll decision status ---
-		} else if (url.pathname === "/api/decision" && req.method === "GET") {
-			if (decisionSettled) {
-				json(res, {
-					approved: true,
-					feedback: undefined,
-					savedPath: undefined,
-					agentSwitch: undefined,
-					permissionMode: undefined,
-				});
-			} else {
-				json(res, { pending: true });
-			}
-		// --- API: SSE stream for real-time decision updates ---
-		} else if (url.pathname === "/api/decision/stream" && req.method === "GET") {
-			res.writeHead(200, {
-				"Content-Type": "text/event-stream",
-				"Cache-Control": "no-cache",
-				Connection: "keep-alive",
-			});
-			res.setTimeout(0);
-
-			const encoder = new TextEncoder();
-			res.write(encoder.encode("event: connected\ndata: {}\n\n"));
-
-			if (decisionSettled) {
-				res.write(encoder.encode(`event: decision\ndata: {"approved":true}\n\n`));
-				res.end();
-				return;
-			}
-
-			const checkInterval = setInterval(() => {
-				if (decisionSettled) {
-					clearInterval(checkInterval);
-					try {
-						res.write(encoder.encode(`event: decision\ndata: {"approved":true}\n\n`));
-						res.end();
-					} catch {
-						/* response already closed */
-					}
-				}
-			}, 200);
-
-			res.on("close", () => {
-				clearInterval(checkInterval);
-			});
-		// --- API: List all plans from history ---
-		} else if (url.pathname === "/api/plans" && req.method === "GET") {
-			const allPlans: Array<{ slug: string; versions: number; lastModified: string; project: string }> = [];
-			const projectsSeen = new Set<string>();
-
-			// Collect from current session's project
-			if (project && !projectsSeen.has(project)) {
-				projectsSeen.add(project);
-				for (const p of listProjectPlans(project)) {
-					allPlans.push({ ...p, project });
-				}
-			}
-
-			// Also check _unknown project
-			if (!projectsSeen.has("_unknown")) {
-				for (const p of listProjectPlans("_unknown")) {
-					allPlans.push({ ...p, project: "_unknown" });
-				}
-			}
-
-			allPlans.sort((a, b) => b.lastModified.localeCompare(a.lastModified));
-			json(res, { plans: allPlans });
-		} else if (url.pathname === "/api/sessions" && req.method === "GET") {
-			const sessions = [{
-				sessionId: reviewId,
-				mode: options.mode === "archive" ? "archive" : "plan",
-				origin: options.origin ?? "pi",
-				project: project || "Unknown",
-				slug: slug || "archive",
-				name: project || "Plan Review",
-				cwd: process.cwd(),
-				url: `http://localhost:${port}`,
-			}];
-			json(res, {
-				sessions,
-				count: 1,
-				maxSessions: 1,
-			});
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			try {
 				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean };
@@ -565,6 +533,15 @@ export async function startPlanReviewServer(options: {
 		} else {
 			html(res, options.htmlContent);
 		}
+	});
+
+	server.on("close", () => {
+		for (const client of sseClients) {
+			if (!client.writableEnded) {
+				client.end();
+			}
+		}
+		sseClients.clear();
 	});
 
 	const { port, portSource } = await listenOnPort(server);

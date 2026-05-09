@@ -67,3 +67,15 @@ target/
 .pytest_cache/
 dist/
 build/
+
+# Local tool state
+.acpx-ralph/
+.gitnexus/
+.gitnexusignore
+.pi-lens/
+.ralph/
+entities.json
+mempalace.yaml
+home/
+_GOAL_multiple-session.md
+_empty.md
