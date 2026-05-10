@@ -20,6 +20,10 @@ export {
 	startPlanReviewServer,
 } from "./server/serverPlan.js";
 export {
+	type MultiSessionPlanResult,
+	startMultiSessionPlanServer,
+} from "./server/serverMultiSession.js";
+export {
 	getGitContext,
 	reviewRuntime,
 	type ReviewServerResult,

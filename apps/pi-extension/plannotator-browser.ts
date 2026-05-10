@@ -9,7 +9,7 @@ import {
 	reviewRuntime,
 	runGitDiff,
 	startAnnotateServer,
-	startPlanReviewServer,
+	startMultiSessionPlanServer,
 	startReviewServer,
 	type DiffType,
 } from "./server.js";
@@ -134,7 +134,7 @@ export async function startPlanReviewBrowserSession(
 	}
 
 	const planSessionOptions = buildPiPlanSessionOptions(ctx);
-	const server = await startPlanReviewServer({
+	const server = await startMultiSessionPlanServer({
 		plan: planContent,
 		htmlContent: planHtmlContent,
 		origin: "pi",
@@ -432,7 +432,7 @@ export async function openArchiveBrowserAction(
 		throw new Error("Plannotator archive browser is unavailable in this session.");
 	}
 
-	const server = await startPlanReviewServer({
+	const server = await startMultiSessionPlanServer({
 		plan: "",
 		htmlContent: planHtmlContent,
 		origin: "pi",
