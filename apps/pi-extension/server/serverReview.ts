@@ -434,7 +434,7 @@ export async function startReviewServer(options: {
 						slug: currentGitRef,
 						name: repoInfo ? `${repoInfo.display} (${currentGitRef})` : "Code Review",
 						cwd: resolveAgentCwd(),
-						url: sessionId ? `http://localhost:${port}/s/${sessionId}` : `http://localhost:${port}`,
+						url: sessionId ? `${serverUrl}/s/${sessionId}` : serverUrl,
 					},
 				],
 				count: 1,
@@ -710,9 +710,9 @@ export async function startReviewServer(options: {
 		}
 	});
 
-	const { port: boundPort, portSource } = await listenOnPort(server);
+	const { port: boundPort, portSource, url: listenUrl } = await listenOnPort(server);
 	port = boundPort;
-	serverUrl = sessionId ? `http://localhost:${port}/s/${sessionId}` : `http://localhost:${port}`;
+	serverUrl = sessionId ? `${listenUrl}/s/${sessionId}` : listenUrl;
 	const exitHandler = () => agentJobs.killAll();
 	process.once("exit", exitHandler);
 

@@ -103,6 +103,7 @@ claude --plugin-dir ./apps/hook
 | `PLANNOTATOR_SERVER_URL` | Full base URL for the plannotator server (e.g. `http://100.114.135.99:19437`). When set, the OpenCode plugin enters **client mode** — it connects to the running server via HTTP instead of spawning its own server. The server must be running in **plan mode** (e.g., `plannotator archive` exposes the full plan server with `/api/sessions`; `plannotator annotate` and `plannotator review` do not). |
 | `PLANNOTATOR_CLIENT_MODE` | Set to `1` to force client mode (plugin connects to running server). Set to `0` to force spawn mode (plugin starts its own server). When unset, auto-detected: if `PLANNOTATOR_SERVER_URL` is set → client mode, otherwise → spawn mode. |
 | `PLANNOTATOR_BROWSER` | Custom browser to open plans in. macOS: app name or path. Linux/Windows: executable path. |
+| `PLANNOTATOR_HOST` | Bind host override (e.g. Tailscale IP `100.x.x.x`). Default: `127.0.0.1` (local) or `0.0.0.0` (remote). When set, browser URLs use this host. |
 | `PLANNOTATOR_SHARE` | Set to `disabled` to turn off URL sharing entirely. Default: enabled. |
 | `PLANNOTATOR_SHARE_URL` | Custom base URL for share links (self-hosted portal). Default: `https://share.plannotator.ai`. |
 | `PLANNOTATOR_PASTE_URL` | Base URL of the paste service API for short URL sharing. Default: `https://plannotator-paste.plannotator.workers.dev`. |
@@ -513,7 +514,7 @@ claude --plugin-dir ./apps/hook
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **plannotator** (10706 symbols, 16242 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **plannotator** (10708 symbols, 16251 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

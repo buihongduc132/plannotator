@@ -164,6 +164,9 @@ export async function startPlanReviewServer(options: {
 	// Lazy cache for in-session archive tab
 	let cachedArchivePlans: ArchivedPlan[] | null = null;
 
+	// Will be set after listenOnPort
+	let serverUrl = "";
+
 	const server = createServer(async (req, res) => {
 		const url = requestUrl(req);
 
@@ -205,7 +208,7 @@ export async function startPlanReviewServer(options: {
 				const sessionId = randomUUID();
 				json(res, {
 					sessionId,
-					url: `http://localhost:${port}/s/${sessionId}`,
+					url: `${serverUrl}/s/${sessionId}`,
 					plan: body.plan,
 					slug: createdSlug,
 					name: body.name ?? null,
@@ -230,7 +233,7 @@ export async function startPlanReviewServer(options: {
 						slug,
 						name: null,
 						cwd: process.cwd(),
-						url: `http://localhost:${port}/s/${reviewId}`,
+						url: `${serverUrl}/s/${reviewId}`,
 					},
 				],
 				count: 1,
@@ -544,13 +547,16 @@ export async function startPlanReviewServer(options: {
 		sseClients.clear();
 	});
 
-	const { port, portSource } = await listenOnPort(server);
+	const result = await listenOnPort(server);
+	const port = result.port;
+	const portSource = result.portSource;
+	serverUrl = result.url;
 
 	return {
 		reviewId,
 		port,
 		portSource,
-		url: `http://localhost:${port}`,
+		url: serverUrl,
 		waitForDecision: () => decisionPromise,
 		onDecision: (listener) => {
 			decisionListeners.add(listener);

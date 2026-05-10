@@ -80,6 +80,7 @@ export async function startAnnotateServer(options: {
 
 	const draftKey = contentHash(options.markdown);
 	const repoInfo = getRepoInfo();
+	let listenUrl = "";
 	const externalAnnotations = createExternalAnnotationHandler("plan");
 
 	let port = 0;
@@ -136,8 +137,8 @@ export async function startAnnotateServer(options: {
 						name: options.filePath.split("/").pop() || "Annotate",
 						cwd: sessionCwd || process.cwd(),
 						url: sessionId
-							? `http://localhost:${port}/s/${sessionId}`
-							: `http://localhost:${port}`,
+							? `${listenUrl}/s/${sessionId}`
+							: `${listenUrl}`,
 					},
 				],
 				count: 1,
@@ -208,11 +209,12 @@ export async function startAnnotateServer(options: {
 
 	const result = await listenOnPort(server);
 	port = result.port;
+	listenUrl = result.url;
 
 	return {
 		port,
 		portSource: result.portSource,
-		url: sessionId ? `http://localhost:${port}/s/${sessionId}` : `http://localhost:${port}`,
+		url: sessionId ? `${listenUrl}/s/${sessionId}` : listenUrl,
 		waitForDecision: () => decisionPromise,
 		stop: () => server.close(),
 	};

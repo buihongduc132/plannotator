@@ -97,11 +97,36 @@ async function isPortAvailable(port: number, host: string): Promise<boolean> {
 	});
 }
 
+/**
+ * Get the host to bind to.
+ * - PLANNOTATOR_HOST env var overrides everything
+ * - Remote sessions bind 0.0.0.0 (accessible from any interface)
+ * - Local sessions bind 127.0.0.1 (localhost only)
+ */
+export function getServerHost(): string {
+	const host = process.env.PLANNOTATOR_HOST;
+	if (host) return host;
+	return isRemoteSession() ? "0.0.0.0" : "127.0.0.1";
+}
+
+/**
+ * Build the server URL from the actual bind host and port.
+ * Handles 0.0.0.0 → falls back to localhost for the URL.
+ * Honors PLANNOTATOR_HOST if set (e.g. Tailscale IP).
+ */
+export function buildServerUrl(host: string, port: number): string {
+	// If bound to 0.0.0.0, use the Tailscale IP or PLANNOTATOR_HOST override
+	const displayHost = host === "0.0.0.0"
+		? (process.env.PLANNOTATOR_HOST || "localhost")
+		: host;
+	return `http://${displayHost}:${port}`;
+}
+
 export async function listenOnPort(
 	server: Server,
-): Promise<{ port: number; portSource: "env" | "remote-default" | "random" }> {
+): Promise<{ port: number; portSource: "env" | "remote-default" | "random"; host: string; url: string }> {
 	const result = getServerPort();
-	const host = isRemoteSession() ? "0.0.0.0" : "127.0.0.1";
+	const host = getServerHost();
 
 	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
 		const port = attempt === 1 ? result.port : 0;
@@ -124,7 +149,7 @@ export async function listenOnPort(
 				});
 			});
 			const addr = server.address() as { port: number };
-			return { port: addr.port, portSource: result.portSource };
+			return { port: addr.port, portSource: result.portSource, host, url: buildServerUrl(host, addr.port) };
 		} catch (err: unknown) {
 			const isAddressInUse =
 				err instanceof Error && err.message.includes("EADDRINUSE");
