@@ -4,6 +4,14 @@
  * Each session represents one plan/review/annotate flow with its own
  * plan content, decision state, and draft key. The registry allows a
  * single HTTP server to serve multiple concurrent sessions.
+ *
+ * Parity with Bun server (packages/server/index.ts):
+ * - SessionContext with all fields from Bun's SessionContext
+ * - slugToSessionId for name-based URL routing
+ * - decisionResolvers for independent concurrent decisions
+ * - MAX_SESSIONS via PLANNOTATOR_MAX_SESSIONS env var
+ * - Integrations: Obsidian, Bear, Octarine, VS Code diff
+ * - Archive mode per session
  */
 
 import { randomUUID } from "node:crypto";
@@ -11,6 +19,7 @@ import { contentHash, deleteDraft } from "../generated/draft.js";
 import {
 	generateSlug,
 	getPlanVersion,
+	getPlanVersionPath,
 	getVersionCount,
 	listVersions,
 	saveAnnotations,
@@ -19,11 +28,32 @@ import {
 } from "../generated/storage.js";
 import { saveConfig, detectGitUser, getServerConfig } from "../generated/config.js";
 import { detectProjectName } from "./project.js";
-import { handleDraftRequest, handleFavicon, handleImageRequest, handleUploadRequest } from "./handlers.js";
+import {
+	handleDraftRequest,
+	handleFavicon,
+	handleImageRequest,
+	handleUploadRequest,
+} from "./handlers.js";
 import { html, json, parseBody, requestUrl } from "./helpers.js";
 import { createEditorAnnotationHandler } from "./annotations.js";
 import { createExternalAnnotationHandler } from "./external-annotations.js";
-import type { ArchivedPlan, listArchivedPlans, readArchivedPlan } from "../generated/storage.js";
+import { openEditorDiff } from "./ide.js";
+import {
+	type BearConfig,
+	type IntegrationResult,
+	type ObsidianConfig,
+	type OctarineConfig,
+	saveToBear,
+	saveToObsidian,
+	saveToOctarine,
+} from "./integrations.js";
+import {
+	handleDocRequest,
+	handleFileBrowserRequest,
+	handleObsidianDocRequest,
+	handleObsidianFilesRequest,
+	handleObsidianVaultsRequest,
+} from "./reference.js";
 
 export interface PlanReviewDecision {
 	approved: boolean;
@@ -33,7 +63,7 @@ export interface PlanReviewDecision {
 	permissionMode?: string;
 }
 
-export interface SessionState {
+export interface SessionContext {
 	sessionId: string;
 	plan: string;
 	origin: string;
@@ -66,12 +96,20 @@ export interface SessionState {
 	donePromise: Promise<void> | undefined;
 }
 
-const MAX_SESSIONS = 50;
-const sessionRegistry = new Map<string, SessionState>();
+const MAX_SESSIONS = (() => {
+	const env = process.env.PLANNOTATOR_MAX_SESSIONS;
+	const parsed = env ? parseInt(env, 10) : NaN;
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 50;
+})();
 
-export function registerSession(state: SessionState): void {
+const sessionRegistry = new Map<string, SessionContext>();
+const slugToSessionId = new Map<string, string>();
+
+export const MAX_SESSIONS_LIMIT = MAX_SESSIONS;
+
+export function registerSession(state: SessionContext): void {
 	if (sessionRegistry.size >= MAX_SESSIONS) {
-		throw new Error(`Concurrent session limit reached (${MAX_SESSIONS})`);
+		throw new Error(`Concurrent session limit reached (${MAX_SESSIONS}). Set PLANNOTATOR_MAX_SESSIONS to increase.`);
 	}
 	sessionRegistry.set(state.sessionId, state);
 }
@@ -79,7 +117,6 @@ export function registerSession(state: SessionState): void {
 export function unregisterSession(sessionId: string): void {
 	const state = sessionRegistry.get(sessionId);
 	if (state) {
-		// Close SSE clients
 		for (const client of state.sseClients) {
 			if (!client.writableEnded) client.end();
 		}
@@ -88,11 +125,17 @@ export function unregisterSession(sessionId: string): void {
 	}
 }
 
-export function getSession(sessionId: string): SessionState | undefined {
-	return sessionRegistry.get(sessionId);
+export function getSession(sessionId: string): SessionContext | undefined {
+	// Try direct ID lookup, then slug-based lookup
+	let found = sessionRegistry.get(sessionId);
+	if (!found) {
+		const mapped = slugToSessionId.get(sessionId);
+		if (mapped) found = sessionRegistry.get(mapped);
+	}
+	return found;
 }
 
-export function listSessions(): SessionState[] {
+export function listSessions(): SessionContext[] {
 	return Array.from(sessionRegistry.values());
 }
 
@@ -100,20 +143,12 @@ export function getSessionCount(): number {
 	return sessionRegistry.size;
 }
 
-export const MAX_SESSIONS_LIMIT = MAX_SESSIONS;
-
-/**
- * Parse /s/<sessionId>/api/* paths.
- */
 export function parseSessionPath(pathname: string): { sessionId: string | null; apiPath: string } {
 	const match = /^\/s\/([^/]+)(\/api\/.*)$/.exec(pathname);
 	if (match) return { sessionId: match[1], apiPath: match[2] };
 	return { sessionId: null, apiPath: pathname };
 }
 
-/**
- * Create a new session state from a plan string.
- */
 export function createSessionState(options: {
 	plan: string;
 	origin?: string;
@@ -124,7 +159,7 @@ export function createSessionState(options: {
 	mode?: "plan" | "archive";
 	customPlanPath?: string | null;
 	sessionId?: string;
-}): SessionState {
+}): SessionContext {
 	const sessionId = options.sessionId || randomUUID();
 	const slug = generateSlug(options.plan);
 	const project = detectProjectName();
@@ -175,10 +210,7 @@ export function createSessionState(options: {
 	};
 }
 
-/**
- * Publish a decision for a specific session.
- */
-export function publishDecision(state: SessionState, result: PlanReviewDecision): boolean {
+export function publishDecision(state: SessionContext, result: PlanReviewDecision): boolean {
 	if (state.decisionSettled) return false;
 	state.decisionSettled = true;
 	state.decisionResult = result;
@@ -200,19 +232,50 @@ export function publishDecision(state: SessionState, result: PlanReviewDecision)
 }
 
 /**
+ * Run integrations (Obsidian/Bear/Octarine) in parallel.
+ */
+async function runIntegrations(
+	body: Record<string, unknown>,
+): Promise<Record<string, IntegrationResult>> {
+	const results: Record<string, IntegrationResult> = {};
+	const promises: Promise<void>[] = [];
+
+	const obsConfig = body.obsidian as ObsidianConfig | undefined;
+	const bearConfig = body.bear as BearConfig | undefined;
+	const octConfig = body.octarine as OctarineConfig | undefined;
+
+	if (obsConfig?.vaultPath && obsConfig?.plan) {
+		promises.push(saveToObsidian(obsConfig).then((r) => { results.obsidian = r; }));
+	}
+	if (bearConfig?.plan) {
+		promises.push(saveToBear(bearConfig).then((r) => { results.bear = r; }));
+	}
+	if (octConfig?.plan && octConfig?.workspace) {
+		promises.push(saveToOctarine(octConfig).then((r) => { results.octarine = r; }));
+	}
+
+	await Promise.allSettled(promises);
+	for (const [name, result] of Object.entries(results)) {
+		if (!result?.success && result) console.error(`[${name}] Save failed: ${result.error}`);
+	}
+	return results;
+}
+
+/**
  * Handle a plan API request for a specific session.
  * Returns true if the request was handled.
  */
 export async function handleSessionApiRequest(
 	req: import("node:http").IncomingMessage,
 	res: import("node:http").ServerResponse,
-	state: SessionState,
+	state: SessionContext,
 	apiPath: string,
 	htmlContent: string,
 ): Promise<boolean> {
 	const url = requestUrl(req);
 	const gitUser = detectGitUser();
 
+	// GET /api/plan
 	if (apiPath === "/api/plan" && req.method === "GET") {
 		if (state.mode === "archive") {
 			json(res, {
@@ -242,6 +305,7 @@ export async function handleSessionApiRequest(
 		return true;
 	}
 
+	// GET /api/plan/version?v=N
 	if (apiPath === "/api/plan/version") {
 		const vParam = url.searchParams.get("v");
 		if (!vParam) { json(res, { error: "Missing v parameter" }, 400); return true; }
@@ -253,11 +317,13 @@ export async function handleSessionApiRequest(
 		return true;
 	}
 
+	// GET /api/plan/versions
 	if (apiPath === "/api/plan/versions") {
 		json(res, { project: state.project, slug: state.slug, versions: listVersions(state.project, state.slug) });
 		return true;
 	}
 
+	// POST /api/approve
 	if (apiPath === "/api/approve" && req.method === "POST") {
 		if (state.decisionSettled) { json(res, { ok: true, duplicate: true }); return true; }
 		let feedback: string | undefined;
@@ -275,7 +341,11 @@ export async function handleSessionApiRequest(
 				planSaveEnabled = ps.enabled;
 				planSaveCustomPath = ps.customPath;
 			}
-		} catch {}
+			// Run integrations
+			await runIntegrations(body as Record<string, unknown>);
+		} catch (err) {
+			console.error("[Integration] Error:", err);
+		}
 		let savedPath: string | undefined;
 		if (planSaveEnabled) {
 			const annotations = feedback || "";
@@ -294,6 +364,7 @@ export async function handleSessionApiRequest(
 		return true;
 	}
 
+	// POST /api/deny
 	if (apiPath === "/api/deny" && req.method === "POST") {
 		if (state.decisionSettled) { json(res, { ok: true, duplicate: true }); return true; }
 		let feedback = "Plan rejected by user";
@@ -319,12 +390,14 @@ export async function handleSessionApiRequest(
 		return true;
 	}
 
+	// GET /api/decision
 	if (apiPath === "/api/decision" && req.method === "GET") {
 		if (!state.decisionSettled) { json(res, { pending: true }); return true; }
 		json(res, state.decisionResult ?? { pending: true });
 		return true;
 	}
 
+	// GET /api/decision/stream (SSE)
 	if (apiPath === "/api/decision/stream" && req.method === "GET") {
 		res.writeHead(200, {
 			"Content-Type": "text/event-stream",
@@ -342,6 +415,7 @@ export async function handleSessionApiRequest(
 		return true;
 	}
 
+	// POST /api/config
 	if (apiPath === "/api/config" && req.method === "POST") {
 		try {
 			const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean };
@@ -355,16 +429,55 @@ export async function handleSessionApiRequest(
 		return true;
 	}
 
+	// POST /api/done (archive mode)
 	if (apiPath === "/api/done" && req.method === "POST") {
 		state.resolveDone?.();
 		json(res, { ok: true });
 		return true;
 	}
 
+	// POST /api/exit (close session without feedback)
+	if (apiPath === "/api/exit" && req.method === "POST") {
+		deleteDraft(state.draftKey);
+		publishDecision(state, { approved: false, feedback: "", savedPath: undefined });
+		json(res, { ok: true });
+		return true;
+	}
+
+	// POST /api/plan/vscode-diff
+	if (apiPath === "/api/plan/vscode-diff" && req.method === "POST") {
+		try {
+			const body = await parseBody(req);
+			const baseVersion = body.baseVersion as number;
+			if (!baseVersion) { json(res, { error: "Missing baseVersion" }, 400); return true; }
+			const basePath = getPlanVersionPath(state.project, state.slug, baseVersion);
+			if (!basePath) { json(res, { error: `Version ${baseVersion} not found` }, 404); return true; }
+			const result = await openEditorDiff(basePath, state.currentPlanPath);
+			if ("error" in result) { json(res, { error: result.error }, 500); return true; }
+			json(res, { ok: true });
+		} catch (err) {
+			json(res, { error: err instanceof Error ? err.message : "Failed to open VS Code diff" }, 500);
+		}
+		return true;
+	}
+
+	// POST /api/save-notes (Obsidian/Bear/Octarine)
+	if (apiPath === "/api/save-notes" && req.method === "POST") {
+		try {
+			const body = (await parseBody(req)) as Record<string, unknown>;
+			const results = await runIntegrations(body);
+			json(res, { ok: true, results });
+		} catch (err) {
+			console.error("[Save Notes] Error:", err);
+			json(res, { error: "Save failed" }, 500);
+		}
+		return true;
+	}
+
+	// Shared handlers
 	if (apiPath === "/api/image") { handleImageRequest(res, url); return true; }
 	if (apiPath === "/api/upload" && req.method === "POST") { await handleUploadRequest(req, res); return true; }
 	if (apiPath === "/api/draft") { await handleDraftRequest(req, res, state.draftKey); return true; }
-
 	if (apiPath === "/favicon.svg") { handleFavicon(res); return true; }
 
 	if (state.editorAnnotations && await state.editorAnnotations.handle(req, res, url)) return true;

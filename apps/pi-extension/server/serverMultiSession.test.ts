@@ -164,4 +164,86 @@ describe("multi-session plan server", () => {
 			server.stop();
 		}
 	});
+
+	test("POST /api/exit resolves decision", async () => {
+		const server = await startMultiSessionPlanServer({
+			plan: "# Exit Test",
+			htmlContent: HTML,
+			sharingEnabled: false,
+		});
+		try {
+			const decisionPromise = server.waitForDecision();
+			const res = await fetch(`${server.url}/api/exit`, { method: "POST" });
+			expect(res.status).toBe(200);
+			const decision = await decisionPromise;
+			expect(decision.approved).toBe(false);
+		} finally {
+			server.stop();
+		}
+	});
+
+	test("POST /api/save-notes runs integrations", async () => {
+		const server = await startMultiSessionPlanServer({
+			plan: "# Save Notes Test",
+			htmlContent: HTML,
+			sharingEnabled: false,
+		});
+		try {
+			const res = await fetch(`${server.url}/api/save-notes`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					obsidian: { vaultPath: "/nonexistent", plan: "test" },
+				}),
+			});
+			expect(res.status).toBe(200);
+			const data = await res.json();
+			expect(data.ok).toBe(true);
+			expect(data.results).toBeDefined();
+		} finally {
+			server.stop();
+		}
+	});
+
+	test("POST /api/config saves config", async () => {
+		const server = await startMultiSessionPlanServer({
+			plan: "# Config Test",
+			htmlContent: HTML,
+			sharingEnabled: false,
+		});
+		try {
+			const res = await fetch(`${server.url}/api/config`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ displayName: "Test User" }),
+			});
+			expect(res.status).toBe(200);
+			const data = await res.json();
+			expect(data.ok).toBe(true);
+		} finally {
+			server.stop();
+		}
+	});
+
+	test("onDecision listener receives result", async () => {
+		const server = await startMultiSessionPlanServer({
+			plan: "# Listener Test",
+			htmlContent: HTML,
+			sharingEnabled: false,
+		});
+		try {
+			let listenerResult: any = null;
+			server.onDecision((r) => { listenerResult = r; });
+			await fetch(`${server.url}/api/deny`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ feedback: "nope", planSave: { enabled: false } }),
+			});
+			await new Promise((r) => setTimeout(r, 50));
+			expect(listenerResult).not.toBeNull();
+			expect(listenerResult.approved).toBe(false);
+		} finally {
+			server.stop();
+		}
+	});
 });
