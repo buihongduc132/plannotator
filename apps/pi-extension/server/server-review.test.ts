@@ -297,6 +297,44 @@ describe("Review server — /api/git-add", () => {
 });
 
 describe("Review server — /api/diff/switch", () => {
+	test("diff/switch returns 400 without local access", async () => {
+		const server = await startReview({ noLocalAccess: true });
+		try {
+			const res = await fetch(`${server.url}/api/diff/switch`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ diffType: "staged" }),
+			});
+			expect(res.status).toBe(400);
+			const data = await res.json() as any;
+			expect(data.error).toContain("Not available");
+		} finally { server.stop(); }
+	});
+
+	test("file-content returns 400 without local access and not PR mode", async () => {
+		const server = await startReview({ noLocalAccess: true });
+		try {
+			const res = await fetch(`${server.url}/api/file-content?path=file.ts`);
+			expect(res.status).toBe(400);
+			const data = await res.json() as any;
+			expect(data.error).toContain("No file access");
+		} finally { server.stop(); }
+	});
+
+	test("git-add returns 400 for staged diff type", async () => {
+		const server = await startReview({ diffType: "staged" });
+		try {
+			const res = await fetch(`${server.url}/api/git-add`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ filePath: "file.ts" }),
+			});
+			expect(res.status).toBe(400);
+			const data = await res.json() as any;
+			expect(data.error).toContain("Staging not available");
+		} finally { server.stop(); }
+	});
+
 	test("returns 400 without diffType", async () => {
 		const server = await startReview();
 		try {
@@ -403,6 +441,118 @@ describe("Review server — PR mode endpoints", () => {
 	});
 });
 
+	describe("Review server — session-scoped endpoints", () => {
+	test("exit with sessionId resolves correctly", async () => {
+		const server = await startReview({ sessionId: "test-session" });
+		try {
+			const decisionPromise = server.waitForDecision();
+			const res = await fetch(`${server.url}/api/exit`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+			});
+			expect(res.status).toBe(200);
+			const decision = await decisionPromise;
+			expect(decision.exit).toBe(true);
+		} finally { server.stop(); }
+	});
+
+	test("feedback with sessionId resolves correctly", async () => {
+		const server = await startReview({ sessionId: "test-session" });
+		try {
+			const decisionPromise = server.waitForDecision();
+			const res = await fetch(`${server.url}/api/feedback`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ approved: true, feedback: "session feedback", annotations: [] }),
+			});
+			expect(res.status).toBe(200);
+			const decision = await decisionPromise;
+			expect(decision.approved).toBe(true);
+			expect(decision.feedback).toBe("session feedback");
+		} finally { server.stop(); }
+	});
+
+	test("draft CRUD with sessionId", async () => {
+		const server = await startReview({ sessionId: "draft-session" });
+		try {
+			// Save draft
+			const saveRes = await fetch(`${server.url}/api/draft`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ text: "draft content" }),
+			});
+			expect(saveRes.status).toBe(200);
+
+			// Retrieve draft
+			const getRes = await fetch(`${server.url}/api/draft`);
+			expect(getRes.status).toBe(200);
+		} finally { server.stop(); }
+	});
+});
+
+describe("Review server — onReady callback", () => {
+	test("onReady is called with server info", async () => {
+		const { startReviewServer } = await import("../server");
+		const repoDir = initRepo();
+		process.chdir(repoDir);
+		writeFileSync(join(repoDir, "file.ts"), "const x = 2;\n", "utf-8");
+		const diffResult = spawnSync("git", ["diff"], { cwd: repoDir, encoding: "utf-8" });
+
+		let readyCalled = false;
+		let readyUrl = "";
+		let readyRemote = false;
+		let readyPort = 0;
+
+		const homeDir = makeTempDir("plannotator-ready-home-");
+		process.env.HOME = homeDir;
+		process.env.PLANNOTATOR_REMOTE = "false";
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
+
+		const server = await startReviewServer({
+			rawPatch: diffResult.stdout || "",
+			gitRef: "main",
+			htmlContent: "<!doctype html><html><body>review</body></html>",
+			origin: "pi",
+			onReady: (url, isRemote, port) => {
+				readyCalled = true;
+				readyUrl = url;
+				readyRemote = isRemote;
+				readyPort = port;
+			},
+		});
+		try {
+			expect(readyCalled).toBe(true);
+			expect(readyUrl).toBeTruthy();
+			expect(readyPort).toBeGreaterThan(0);
+		} finally { server.stop(); }
+	});
+
+	test("onCleanup is called on stop", async () => {
+		const { startReviewServer } = await import("../server");
+		const repoDir = initRepo();
+		process.chdir(repoDir);
+		writeFileSync(join(repoDir, "file.ts"), "const x = 2;\n", "utf-8");
+		const diffResult = spawnSync("git", ["diff"], { cwd: repoDir, encoding: "utf-8" });
+
+		let cleanedUp = false;
+
+		const homeDir = makeTempDir("plannotator-cleanup-home-");
+		process.env.HOME = homeDir;
+		process.env.PLANNOTATOR_REMOTE = "false";
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
+
+		const server = await startReviewServer({
+			rawPatch: diffResult.stdout || "",
+			gitRef: "main",
+			htmlContent: "<!doctype html><html><body>review</body></html>",
+			origin: "pi",
+			onCleanup: () => { cleanedUp = true; },
+		});
+		server.stop();
+		expect(cleanedUp).toBe(true);
+	});
+});
+
 describe("Review server — session routing", () => {
 	test("session mismatch returns 403", async () => {
 		const server = await startReview({ sessionId: "good-session" });
@@ -464,7 +614,58 @@ describe("Review server — agent jobs", () => {
 	});
 });
 
-describe("Review server — misc", () => {
+describe("Review server — external annotations", () => {
+	test("GET /api/external-annotations returns snapshot", async () => {
+		const server = await startReview();
+		try {
+			const res = await fetch(`${server.url}/api/external-annotations`);
+			expect(res.status).toBe(200);
+			const data = await res.json() as any;
+			expect(data.annotations).toEqual([]);
+		} finally { server.stop(); }
+	});
+});
+
+describe("Review server — agent jobs integration", () => {
+	test("POST /api/agents/jobs launches via review server", async () => {
+		const server = await startReview();
+		try {
+			// Check if claude is available
+			const capRes = await fetch(`${server.url}/api/agents/capabilities`);
+			const caps = await capRes.json() as any;
+			const claudeProvider = caps.providers?.find((p: any) => p.id === "claude" && p.available);
+
+			if (!claudeProvider) {
+				console.log("Skipping agent job test — claude not available");
+				return;
+			}
+
+			// Launch a job (the buildCommand callback will be exercised)
+			const res = await fetch(`${server.url}/api/agents/jobs`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					provider: "claude",
+					command: ["echo", "test"],
+				}),
+			});
+			expect(res.status).toBe(201);
+			const data = await res.json() as any;
+			expect(data.job.id).toBeTruthy();
+
+			// Wait for it to complete
+			await new Promise(r => setTimeout(r, 2000));
+
+			// Check job status
+			const jobsRes = await fetch(`${server.url}/api/agents/jobs`);
+			const jobs = await jobsRes.json() as any;
+			expect(jobs.jobs.length).toBeGreaterThan(0);
+			expect(["done", "failed", "running"]).toContain(jobs.jobs[0].status);
+		} finally { server.stop(); }
+	});
+});
+
+	describe("Review server — misc", () => {
 	test("GET /favicon.svg returns SVG", async () => {
 		const server = await startReview();
 		try {
@@ -517,6 +718,30 @@ describe("Review server — misc", () => {
 				}),
 			});
 			expect(res.status).toBe(200);
+		} finally { server.stop(); }
+	});
+
+	test("GET /api/image returns 400 without path", async () => {
+		const server = await startReview();
+		try {
+			const res = await fetch(`${server.url}/api/image`);
+			expect(res.status).toBe(400);
+		} finally { server.stop(); }
+	});
+
+	test("GET /api/draft returns 404 when no draft", async () => {
+		const server = await startReview();
+		try {
+			const res = await fetch(`${server.url}/api/draft`);
+			expect(res.status).toBe(404);
+		} finally { server.stop(); }
+	});
+
+	test("file-content with oldPath validates it", async () => {
+		const server = await startReview();
+		try {
+			const res = await fetch(`${server.url}/api/file-content?path=file.ts&oldPath=../../../etc/passwd`);
+			expect(res.status).toBe(400);
 		} finally { server.stop(); }
 	});
 });

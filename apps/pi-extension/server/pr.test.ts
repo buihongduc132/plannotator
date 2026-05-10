@@ -13,12 +13,13 @@ describe("pr — parsePRUrl", () => {
 		}
 	});
 
-	test("parses GitHub PR URL with full host", () => {
-		const result = parsePRUrl("https://github.com/owner/repo/pull/123");
+	test("parses GitHub GHE URL", () => {
+		const result = parsePRUrl("https://github.mycompany.com/team/repo/pull/99");
 		expect(result).toBeDefined();
 		if (result) {
 			expect(result.platform).toBe("github");
-			expect(result.number).toBe(123);
+			expect(result.host).toBe("github.mycompany.com");
+			expect(result.number).toBe(99);
 		}
 	});
 
@@ -43,13 +44,13 @@ describe("pr — parsePRUrl", () => {
 		}
 	});
 
-	test("parses GitHub GHE URL", () => {
-		const result = parsePRUrl("https://github.mycompany.com/team/repo/pull/99");
+	test("parses GitLab MR with nested groups", () => {
+		const result = parsePRUrl("https://gitlab.com/org/team/repo/-/merge_requests/3");
 		expect(result).toBeDefined();
 		if (result) {
-			expect(result.platform).toBe("github");
-			expect(result.host).toBe("github.mycompany.com");
-			expect(result.number).toBe(99);
+			expect(result.platform).toBe("gitlab");
+			expect(result.projectPath).toBe("org/team/repo");
+			expect(result.iid).toBe(3);
 		}
 	});
 
@@ -67,5 +68,9 @@ describe("pr — parsePRUrl", () => {
 
 	test("returns null for issues URL", () => {
 		expect(parsePRUrl("https://github.com/owner/repo/issues/42")).toBeNull();
+	});
+
+	test("returns null for non-http URL", () => {
+		expect(parsePRUrl("ftp://github.com/owner/repo/pull/1")).toBeNull();
 	});
 });
