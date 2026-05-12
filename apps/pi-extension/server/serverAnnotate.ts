@@ -10,7 +10,7 @@ import {
 	handleImageRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { html, json, parseBody, requestUrl } from "./helpers.js";
+import { detectWSL, html, json, parseBody, requestUrl } from "./helpers.js";
 
 import { listenOnPort } from "./network.js";
 
@@ -109,6 +109,7 @@ export async function startAnnotateServer(options: {
 		if (await externalAnnotations.handle(req, res, url)) return;
 
 		if (apiPath === "/api/plan" && req.method === "GET") {
+			const wslFlag = detectWSL();
 			json(res, {
 				plan: options.markdown,
 				origin: options.origin ?? "pi",
@@ -122,6 +123,7 @@ export async function startAnnotateServer(options: {
 				repoInfo,
 				projectRoot: options.folderPath || sessionCwd || process.cwd(),
 				cwd: sessionCwd,
+				isWSL: wslFlag,
 				sessionId,
 				serverConfig: getServerConfig(gitUser),
 			});
@@ -145,11 +147,12 @@ export async function startAnnotateServer(options: {
 			});
 		} else if (apiPath === "/api/config" && req.method === "POST") {
 			try {
-				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean };
+				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
 				const toSave: Record<string, unknown> = {};
 				if (body.displayName !== undefined) toSave.displayName = body.displayName;
 				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
+				if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
 				if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
 				json(res, { ok: true });
 			} catch {

@@ -24,7 +24,7 @@ import {
 	handleImageRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { html, json, parseBody, requestUrl } from "./helpers.js";
+import { detectWSL, html, json, parseBody, requestUrl } from "./helpers.js";
 import { openEditorDiff } from "./ide.js";
 import {
 	type BearConfig,
@@ -282,6 +282,7 @@ export async function startPlanReviewServer(options: {
 		} else if (url.pathname === "/api/plan/versions") {
 			json(res, { project, slug, versions: listVersions(project, slug) });
 		} else if (url.pathname === "/api/plan") {
+			const wslFlag = detectWSL();
 			if (options.mode === "archive") {
 				json(res, {
 					plan: initialArchivePlan,
@@ -290,7 +291,9 @@ export async function startPlanReviewServer(options: {
 					archivePlans,
 					sharingEnabled,
 					shareBaseUrl,
+					isWSL: wslFlag,
 					serverConfig: getServerConfig(gitUser),
+					sessionId: reviewId,
 				});
 			} else {
 				json(res, {
@@ -304,16 +307,20 @@ export async function startPlanReviewServer(options: {
 					pasteApiUrl,
 					repoInfo,
 					projectRoot: process.cwd(),
+					cwd: process.cwd(),
+					isWSL: wslFlag,
 					serverConfig: getServerConfig(gitUser),
+					sessionId: reviewId,
 				});
 			}
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			try {
-				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean };
+				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
 				const toSave: Record<string, unknown> = {};
 				if (body.displayName !== undefined) toSave.displayName = body.displayName;
 				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
+				if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
 				if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
 				json(res, { ok: true });
 			} catch {

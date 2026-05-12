@@ -34,7 +34,7 @@ import {
 	handleImageRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { html, json, parseBody, requestUrl } from "./helpers.js";
+import { detectWSL, html, json, parseBody, requestUrl } from "./helpers.js";
 import { createEditorAnnotationHandler } from "./annotations.js";
 import { createExternalAnnotationHandler } from "./external-annotations.js";
 import { openEditorDiff } from "./ide.js";
@@ -105,6 +105,25 @@ const MAX_SESSIONS = (() => {
 const sessionRegistry = new Map<string, SessionContext>();
 const slugToSessionId = new Map<string, string>();
 
+function sanitizeForSlug(name: string): string {
+	return name
+		.toLowerCase()
+		.trim()
+		.replace(/[^a-z0-9\s-]/g, "")
+		.replace(/[\s_]+/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "");
+}
+
+function resolveUniqueSlug(baseSlug: string): string {
+	if (!slugToSessionId.has(baseSlug)) return baseSlug;
+	let i = 2;
+	while (slugToSessionId.has(`${baseSlug}-${i}`)) i++;
+	return `${baseSlug}-${i}`;
+}
+
+
+
 export const MAX_SESSIONS_LIMIT = MAX_SESSIONS;
 
 export function registerSession(state: SessionContext): void {
@@ -112,6 +131,12 @@ export function registerSession(state: SessionContext): void {
 		throw new Error(`Concurrent session limit reached (${MAX_SESSIONS}). Set PLANNOTATOR_MAX_SESSIONS to increase.`);
 	}
 	sessionRegistry.set(state.sessionId, state);
+	// Register name-based slug for /s/{name} routing
+	const baseNameSlug = sanitizeForSlug(state.slug);
+	if (baseNameSlug) {
+		const uniqueSlug = resolveUniqueSlug(baseNameSlug);
+		slugToSessionId.set(uniqueSlug, state.sessionId);
+	}
 }
 
 export function unregisterSession(sessionId: string): void {
@@ -121,6 +146,10 @@ export function unregisterSession(sessionId: string): void {
 			if (!client.writableEnded) client.end();
 		}
 		state.sseClients.clear();
+		// Clean up name-based slug mapping
+		for (const [slug, id] of slugToSessionId.entries()) {
+			if (id === sessionId) slugToSessionId.delete(slug);
+		}
 		sessionRegistry.delete(sessionId);
 	}
 }
@@ -161,13 +190,27 @@ export function createSessionState(options: {
 	sessionId?: string;
 }): SessionContext {
 	const sessionId = options.sessionId || randomUUID();
-	const slug = generateSlug(options.plan);
+	const isArchive = options.mode === "archive";
+	const slug = !isArchive ? generateSlug(options.plan) : "";
 	const project = detectProjectName();
-	const historyResult = saveToHistory(project, slug, options.plan);
-	const previousPlan = historyResult.version > 1
-		? getPlanVersion(project, slug, historyResult.version - 1)
-		: null;
-	const draftKey = contentHash(options.plan);
+	let version = 0;
+	let totalVersions = 0;
+	let currentPlanPath = "";
+	let previousPlan: string | null = null;
+	let draftKey = "";
+	if (!isArchive) {
+		try {
+			const historyResult = saveToHistory(project, slug, options.plan);
+			version = historyResult.version;
+			totalVersions = getVersionCount(project, slug);
+			currentPlanPath = historyResult.path;
+			previousPlan = version > 1 ? getPlanVersion(project, slug, version - 1) : null;
+			draftKey = contentHash(options.plan);
+		} catch (err) {
+			console.error("[plannotator] Warning: saveToHistory failed:", err);
+			draftKey = contentHash(options.plan);
+		}
+	}
 
 	let resolveDecision!: (result: PlanReviewDecision) => void;
 	const decisionListeners = new Set<(result: PlanReviewDecision) => void | Promise<void>>();
@@ -189,15 +232,11 @@ export function createSessionState(options: {
 		slug,
 		project,
 		draftKey,
-		versionInfo: {
-			version: historyResult.version,
-			totalVersions: getVersionCount(project, slug),
-			project,
-		},
-		currentPlanPath: historyResult.path,
+		versionInfo: { version, totalVersions, project },
+		currentPlanPath,
 		previousPlan,
-		editorAnnotations: createEditorAnnotationHandler(),
-		externalAnnotations: createExternalAnnotationHandler("plan"),
+		editorAnnotations: isArchive ? null : createEditorAnnotationHandler(),
+		externalAnnotations: isArchive ? null : createExternalAnnotationHandler("plan"),
 		decisionSettled: false,
 		decisionResult: null,
 		decisionListeners,
@@ -222,10 +261,22 @@ export function publishDecision(state: SessionContext, result: PlanReviewDecisio
 		});
 	}
 
-	const payload = `event: decision\ndata: ${JSON.stringify(result)}\n\n`;
+	let payload: string;
+	try {
+		payload = `event: decision\ndata: ${JSON.stringify(result)}\n\n`;
+	} catch (err) {
+		payload = `event: decision\ndata: {}\n\n`;
+		console.error("[Plan Review] JSON.stringify failed for decision:", err);
+	}
 	for (const client of state.sseClients) {
-		client.write(payload);
-		client.end();
+		try {
+			if (!client.writableEnded && !client.destroyed) {
+				client.write(payload);
+				client.end();
+			}
+		} catch {
+			// Client already disconnected
+		}
 	}
 	state.sseClients.clear();
 	return true;
@@ -277,6 +328,7 @@ export async function handleSessionApiRequest(
 
 	// GET /api/plan
 	if (apiPath === "/api/plan" && req.method === "GET") {
+		const wslFlag = detectWSL();
 		if (state.mode === "archive") {
 			json(res, {
 				plan: state.archivePlans.length > 0 ? state.archivePlans[0] : "",
@@ -285,21 +337,26 @@ export async function handleSessionApiRequest(
 				archivePlans: state.archivePlans,
 				sharingEnabled: state.sharingEnabled,
 				shareBaseUrl: state.shareBaseUrl,
+				isWSL: wslFlag,
 				serverConfig: getServerConfig(gitUser),
+				sessionId: state.sessionId,
 			});
 		} else {
 			json(res, {
 				plan: state.plan,
 				origin: state.origin,
 				permissionMode: state.permissionMode,
-				previousPlan: state.previousPlan,
-				versionInfo: state.versionInfo,
 				sharingEnabled: state.sharingEnabled,
 				shareBaseUrl: state.shareBaseUrl,
 				pasteApiUrl: state.pasteApiUrl,
 				repoInfo: null,
+				previousPlan: state.previousPlan,
+				versionInfo: state.versionInfo,
 				projectRoot: process.cwd(),
+				cwd: process.cwd(),
+				isWSL: wslFlag,
 				serverConfig: getServerConfig(gitUser),
+				sessionId: state.sessionId,
 			});
 		}
 		return true;
@@ -418,11 +475,12 @@ export async function handleSessionApiRequest(
 	// POST /api/config
 	if (apiPath === "/api/config" && req.method === "POST") {
 		try {
-			const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean };
+			const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
 			const toSave: Record<string, unknown> = {};
 			if (body.displayName !== undefined) toSave.displayName = body.displayName;
 			if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
 			if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
+			if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
 			if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
 			json(res, { ok: true });
 		} catch { json(res, { error: "Invalid request" }, 400); }

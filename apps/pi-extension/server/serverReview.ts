@@ -1,7 +1,6 @@
 import { execSync, spawnSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
-import os from "node:os";
 
 import { Readable } from "node:stream";
 
@@ -45,7 +44,7 @@ import {
 	handleImageRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { html, json, parseBody, requestUrl, toWebRequest } from "./helpers.js";
+import { detectWSL, html, json, parseBody, requestUrl, toWebRequest } from "./helpers.js";
 
 import { isRemoteSession, listenOnPort } from "./network.js";
 import {
@@ -72,17 +71,6 @@ import {
 	transformClaudeFindings,
 } from "../generated/claude-review.js";
 
-function detectWSL(): boolean {
-	if (process.platform !== "linux") return false;
-	if (os.release().toLowerCase().includes("microsoft")) return true;
-	try {
-		if (existsSync("/proc/version")) {
-			const content = readFileSync("/proc/version", "utf-8").toLowerCase();
-			return content.includes("wsl") || content.includes("microsoft");
-		}
-	} catch {}
-	return false;
-}
 
 export interface ReviewServerResult {
 	port: number;
@@ -594,11 +582,12 @@ export async function startReviewServer(options: {
 			json(res, { error: "No file access available" }, 400);
 		} else if (apiPath === "/api/config" && req.method === "POST") {
 			try {
-				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean };
+				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
 				const toSave: Record<string, unknown> = {};
 				if (body.displayName !== undefined) toSave.displayName = body.displayName;
 				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
+				if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
 				if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
 				json(res, { ok: true });
 			} catch {

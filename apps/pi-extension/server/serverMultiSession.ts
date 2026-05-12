@@ -25,9 +25,34 @@ import {
 import { listArchivedPlans, readArchivedPlan } from "../generated/storage.js";
 import { detectProjectName } from "./project.js";
 import { handleFavicon, handleImageRequest, handleUploadRequest } from "./handlers.js";
-import { json, parseBody, requestUrl } from "./helpers.js";
+import { html, json, parseBody, requestUrl } from "./helpers.js";
 import { buildServerUrl, getServerHost, getServerPort, isRemoteSession, listenOnPort, openBrowser } from "./network.js";
 import { handleDocRequest, handleFileBrowserRequest, handleObsidianDocRequest, handleObsidianFilesRequest, handleObsidianVaultsRequest } from "./reference.js";
+
+/**
+ * Regex to extract slug from bare session paths: /s/<slug> or /s/<slug>/anything
+ */
+const BARE_SESSION_SLUG_REGEX = /^\/s\/([^/]+)(?:\/.*)?$/;
+
+/**
+ * Extract session slug from any /s/<slug>... path.
+ */
+function extractSessionSlug(pathname: string): string | null {
+	const match = BARE_SESSION_SLUG_REGEX.exec(pathname);
+	return match ? match[1] : null;
+}
+
+/**
+ * Inject session base path into HTML so client-side fetch('/api/...') resolves correctly.
+ * Uses lastIndexOf for </head> because the bundled JS (DOMPurify source) contains that literal.
+ */
+function injectSessionPath(htmlContent: string, slug: string): string {
+	if (!htmlContent) return htmlContent;
+	const headCloseIdx = htmlContent.lastIndexOf("</head>");
+	if (headCloseIdx === -1) return htmlContent;
+	const injection = `<script>window.__PLANNOTATOR_SESSION_PATH__="/s/${slug}"<` + `/script>`;
+	return htmlContent.slice(0, headCloseIdx) + injection + htmlContent.slice(headCloseIdx);
+}
 
 export interface MultiSessionPlanResult {
 	reviewId: string;
@@ -36,6 +61,7 @@ export interface MultiSessionPlanResult {
 	url: string;
 	waitForDecision: () => Promise<PlanReviewDecision>;
 	onDecision: (listener: (result: PlanReviewDecision) => void | Promise<void>) => () => void;
+	waitForDone?: () => Promise<void>;
 	stop: () => void;
 }
 
@@ -52,6 +78,8 @@ export async function startMultiSessionPlanServer(options: {
 	htmlContent: string;
 	origin?: string;
 	permissionMode?: string;
+	mode?: "plan" | "archive";
+	customPlanPath?: string | null;
 	sharingEnabled?: boolean;
 	shareBaseUrl?: string;
 	pasteApiUrl?: string;
@@ -65,6 +93,8 @@ export async function startMultiSessionPlanServer(options: {
 		plan: options.plan,
 		origin: options.origin,
 		permissionMode: options.permissionMode,
+		mode: options.mode,
+		customPlanPath: options.customPlanPath,
 		sharingEnabled: options.sharingEnabled,
 		shareBaseUrl: options.shareBaseUrl,
 		pasteApiUrl: options.pasteApiUrl,
@@ -87,6 +117,7 @@ export async function startMultiSessionPlanServer(options: {
 				state.decisionListeners.add(listener);
 				return () => state.decisionListeners.delete(listener);
 			},
+			waitForDone: state.donePromise ? () => state.donePromise! : undefined,
 			stop: () => {
 				unregisterSession(sessionId);
 				serverRefCount--;
@@ -199,8 +230,14 @@ export async function startMultiSessionPlanServer(options: {
 		if (apiPath === "/api/reference/files" && req.method === "GET") { handleFileBrowserRequest(res, url); return; }
 		if (apiPath === "/favicon.svg") { handleFavicon(res); return; }
 
-		// Fallback: serve HTML
-		html(res, sharedHtmlContent);
+		// SPA fallback: inject session base path into HTML so client JS
+		// knows to fetch /s/{slug}/api/... instead of flat /api/...
+		const slug = pathSessionId || extractSessionSlug(url.pathname);
+		if (slug) {
+			html(res, injectSessionPath(sharedHtmlContent, slug));
+		} else {
+			html(res, sharedHtmlContent);
+		}
 	});
 
 	const result = await listenOnPort(server);
@@ -224,6 +261,7 @@ export async function startMultiSessionPlanServer(options: {
 			state.decisionListeners.add(listener);
 			return () => state.decisionListeners.delete(listener);
 		},
+		waitForDone: state.donePromise ? () => state.donePromise! : undefined,
 		stop: () => {
 			unregisterSession(sessionId);
 			serverRefCount--;

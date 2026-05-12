@@ -74,6 +74,7 @@ export interface PlannotatorReviewStatusPayload {
 	reviewId: string;
 }
 
+import type { PlannotatorReviewStatusResult } from "./review-status-store.js";
 export type { PlannotatorReviewStatusResult } from "./review-status-store.js";
 
 export interface PlannotatorCodeReviewPayload {
