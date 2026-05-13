@@ -737,8 +737,14 @@ const [cwd, setCwd] = useState<string | null>(null);
         }
       })
       .catch(() => {
-        // Not in API mode - use default content
-        setIsApiMode(false);
+        // If we have a session path injected, this is a real API session that failed to load
+        if (window.__PLANNOTATOR_SESSION_PATH__) {
+          setMarkdown(`# Session Not Found\n\nThe session you're looking for is no longer active. It may have been closed or the server was restarted.\n\nSession path: \`${window.__PLANNOTATOR_SESSION_PATH__}\``);
+          setIsApiMode(true); // Prevent demo-mode UI
+        } else {
+          // Not in API mode - use default content (dev mode)
+          setIsApiMode(false);
+        }
       })
       .finally(() => setIsLoading(false));
   }, [isLoadingShared, isSharedSession]);

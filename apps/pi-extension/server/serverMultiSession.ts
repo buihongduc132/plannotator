@@ -351,14 +351,25 @@ export async function startMultiSessionPlanServer(options: {
 		if (apiPath === "/api/reference/files" && req.method === "GET") { handleFileBrowserRequest(res, url); return; }
 		if (apiPath === "/favicon.svg") { handleFavicon(res); return; }
 
+		// API routes without a session should 404, not serve HTML
+		if (apiPath.startsWith("/api/")) {
+			json(res, { error: "Session required for API routes", path: apiPath }, 404);
+			return;
+		}
+
 		// SPA fallback: inject session base path into HTML so client JS
 		// knows to fetch /s/{slug}/api/... instead of flat /api/...
 		const slug = pathSessionId || extractSessionSlug(url.pathname);
 		if (slug) {
 			const sessState = getSession(slug);
-			const content = sessState?.htmlContent || sharedHtmlContent;
+			if (!sessState) {
+				json(res, { error: "Session not found", sessionId: slug }, 404);
+				return;
+			}
+			const content = sessState.htmlContent || sharedHtmlContent;
 			html(res, injectSessionPath(content, slug));
 		} else {
+			// Root URL — serve HTML with no session injection (shows session picker or demo)
 			html(res, sharedHtmlContent);
 		}
 	});
