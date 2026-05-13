@@ -79,6 +79,7 @@ export interface SessionContext {
 	versionInfo: { version: number; totalVersions: number; project: string };
 	currentPlanPath: string;
 	previousPlan: string | null;
+	htmlContent: string;
 	editorAnnotations: ReturnType<typeof createEditorAnnotationHandler> | null;
 	externalAnnotations: ReturnType<typeof createExternalAnnotationHandler> | null;
 
@@ -188,6 +189,7 @@ export function createSessionState(options: {
 	mode?: "plan" | "archive";
 	customPlanPath?: string | null;
 	sessionId?: string;
+	htmlContent?: string;
 }): SessionContext {
 	const sessionId = options.sessionId || randomUUID();
 	const isArchive = options.mode === "archive";
@@ -235,6 +237,7 @@ export function createSessionState(options: {
 		versionInfo: { version, totalVersions, project },
 		currentPlanPath,
 		previousPlan,
+		htmlContent: options.htmlContent ?? "",
 		editorAnnotations: isArchive ? null : createEditorAnnotationHandler(),
 		externalAnnotations: isArchive ? null : createExternalAnnotationHandler("plan"),
 		decisionSettled: false,
@@ -321,7 +324,6 @@ export async function handleSessionApiRequest(
 	res: import("node:http").ServerResponse,
 	state: SessionContext,
 	apiPath: string,
-	htmlContent: string,
 ): Promise<boolean> {
 	const url = requestUrl(req);
 	const gitUser = detectGitUser();

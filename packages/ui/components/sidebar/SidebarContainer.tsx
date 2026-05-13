@@ -115,7 +115,7 @@ export const SidebarContainer: React.FC<SidebarContainerProps> = ({
       style={{ width }}
     >
       {/* Tab bar */}
-      <div className="flex items-center border-b border-border/50 px-1 py-1 gap-0.5 flex-shrink-0 overflow-hidden min-w-0">
+      <div className="flex flex-wrap items-center border-b border-border/50 px-1 py-1 gap-0.5 flex-shrink-0 overflow-visible min-w-0">
         <TabButton
           active={activeTab === "toc"}
           onClick={() => onTabChange("toc")}
@@ -322,7 +322,7 @@ const TabButton: React.FC<{
 }> = ({ active, onClick, icon, label, badge }) => (
   <button
     onClick={onClick}
-    className={`relative flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors min-w-0 shrink-0 ${
+    className={`relative flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors min-w-0 shrink ${
       active
         ? "bg-primary/10 text-primary"
         : "text-muted-foreground hover:text-foreground hover:bg-muted/50"

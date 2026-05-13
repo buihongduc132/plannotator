@@ -19,7 +19,6 @@ import {
 	parseSessionPath,
 	registerSession,
 	unregisterSession,
-	getSessionCount,
 	MAX_SESSIONS_LIMIT,
 } from "./session-registry.js";
 import { listArchivedPlans, readArchivedPlan } from "../generated/storage.js";
@@ -73,6 +72,24 @@ let sharedHtmlContent = "";
 let sharedUrl = "";
 let serverRefCount = 0;
 
+async function probeExistingServer(port: number): Promise<{ alive: boolean; url: string }> {
+	try {
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 500);
+		const res = await fetch(`http://localhost:${port}/api/agents`, { signal: controller.signal });
+		clearTimeout(timeout);
+		if (res.ok) {
+			const body = (await res.json()) as any;
+			if (body && typeof body === "object" && "agents" in body) {
+				return { alive: true, url: `http://localhost:${port}` };
+			}
+		}
+		return { alive: false, url: "" };
+	} catch {
+		return { alive: false, url: "" };
+	}
+}
+
 export async function startMultiSessionPlanServer(options: {
 	plan: string;
 	htmlContent: string;
@@ -86,7 +103,93 @@ export async function startMultiSessionPlanServer(options: {
 	sessionId?: string;
 }): Promise<MultiSessionPlanResult> {
 	const sessionId = options.sessionId || randomUUID();
-	sharedHtmlContent = options.htmlContent;
+
+	// --- Client mode: connect to existing server ---
+	const fixedPort = parseInt(process.env.PLANNOTATOR_PI_PORT || "19432", 10);
+	const probe = await probeExistingServer(fixedPort);
+
+	if (probe.alive) {
+		// Register session via HTTP
+		const newSessionId = sessionId;
+		try {
+			const res = await fetch(`${probe.url}/api/sessions`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ plan: options.plan, sessionId: newSessionId, mode: options.mode }),
+			});
+			if (!res.ok) throw new Error(`POST /api/sessions failed: ${res.status}`);
+
+			const sessionUrl = `${probe.url}/s/${newSessionId}`;
+
+			// Return client-mode result — stop is no-op, decision polling
+			let decisionResolve: (value: any) => void;
+			const decisionPromise = new Promise<any>((resolve) => {
+				decisionResolve = resolve;
+			});
+			let stopped = false;
+			let decisionSettled = false;
+			let pollAttempts = 0;
+			const MAX_POLL_ATTEMPTS = 120; // 2 minutes at 1s interval
+
+			const clientListeners = new Set<Function>();
+
+			// Poll for decision
+			const pollInterval = setInterval(async () => {
+				if (stopped) { clearInterval(pollInterval); return; }
+				pollAttempts++;
+				if (pollAttempts > MAX_POLL_ATTEMPTS) {
+					clearInterval(pollInterval);
+					if (!decisionSettled) {
+						decisionSettled = true;
+						decisionResolve!({ approved: false, feedback: "Polling timed out — server unreachable" });
+					}
+					return;
+				}
+				try {
+					const r = await fetch(`${probe.url}/api/sessions/${newSessionId}/decision`);
+					if (r.ok) {
+						const data = (await r.json()) as any;
+						if (data.settled) {
+							clearInterval(pollInterval);
+							if (!decisionSettled) {
+								decisionSettled = true;
+								decisionResolve!(data.result ?? { approved: false });
+							}
+						}
+					}
+				} catch {
+					// Server might be temporarily unreachable, keep polling
+				}
+			}, 1000);
+
+			return {
+				reviewId: newSessionId,
+				port: fixedPort,
+				portSource: "env" as const,
+				url: sessionUrl,
+				waitForDecision: () => decisionPromise,
+				onDecision: (listener) => {
+					clientListeners.add(listener);
+					decisionPromise.then((r) => {
+						if (clientListeners.has(listener)) listener(r);
+					});
+					return () => { clientListeners.delete(listener); };
+				},
+				waitForDone: undefined,
+				stop: () => {
+					stopped = true;
+					clearInterval(pollInterval);
+					if (!decisionSettled) {
+						decisionSettled = true;
+						decisionResolve!({ approved: false, feedback: "Client stopped" });
+					}
+				},
+			};
+		} catch {
+			// POST failed — server died between probe and register
+			// Fall through to start own server
+		}
+	}
 
 	// Create session state
 	const state = createSessionState({
@@ -99,6 +202,7 @@ export async function startMultiSessionPlanServer(options: {
 		shareBaseUrl: options.shareBaseUrl,
 		pasteApiUrl: options.pasteApiUrl,
 		sessionId,
+		htmlContent: options.htmlContent,
 	});
 
 	// If server already running, just register the session
@@ -177,6 +281,23 @@ export async function startMultiSessionPlanServer(options: {
 			return;
 		}
 
+		// NEW: Decision polling endpoint
+		const decisionMatch = /^\/api\/sessions\/([^/]+)\/decision$/.exec(apiPath);
+		if (decisionMatch && req.method === "GET") {
+			const targetSessionId = decisionMatch[1];
+			const sessionState = getSession(targetSessionId);
+			if (!sessionState) {
+				json(res, { error: "Session not found" }, 404);
+				return;
+			}
+			const settled = sessionState.decisionSettled;
+			json(res, {
+				settled,
+				result: settled ? sessionState.decisionResult : undefined,
+			});
+			return;
+		}
+
 		if (apiPath === "/api/plans" && req.method === "GET") {
 			const project = detectProjectName();
 			const { listProjectPlans } = await import("../generated/storage.js");
@@ -216,7 +337,7 @@ export async function startMultiSessionPlanServer(options: {
 				}, 404);
 				return;
 			}
-			const handled = await handleSessionApiRequest(req, res, sessionState, apiPath, sharedHtmlContent);
+			const handled = await handleSessionApiRequest(req, res, sessionState, apiPath);
 			if (handled) return;
 		}
 
@@ -234,17 +355,69 @@ export async function startMultiSessionPlanServer(options: {
 		// knows to fetch /s/{slug}/api/... instead of flat /api/...
 		const slug = pathSessionId || extractSessionSlug(url.pathname);
 		if (slug) {
-			html(res, injectSessionPath(sharedHtmlContent, slug));
+			const sessState = getSession(slug);
+			const content = sessState?.htmlContent || sharedHtmlContent;
+			html(res, injectSessionPath(content, slug));
 		} else {
 			html(res, sharedHtmlContent);
 		}
 	});
 
-	const result = await listenOnPort(server);
+	// For multi-session mode, use fixed port so other pi processes can discover us
+	const host = getServerHost();
+	const multiPort = parseInt(process.env.PLANNOTATOR_PI_PORT || process.env.PLANNOTATOR_PORT || '19432', 10);
+
+	try {
+		await new Promise<void>((resolve, reject) => {
+			server.once('error', reject);
+			server.listen(multiPort, host, () => {
+				server.removeListener('error', reject);
+				resolve();
+			});
+		});
+	} catch (err: unknown) {
+		// Fixed port unavailable — fall back to random
+		if (server.listening) {
+			await new Promise<void>((r, j) => server.close((e) => e ? j(e) : r()));
+		}
+		const fallback = await listenOnPort(server);
+		sharedPort = fallback.port;
+		sharedPortSource = fallback.portSource;
+		sharedUrl = fallback.url;
+		sharedServer = server;
+		sharedHtmlContent = options.htmlContent;
+		registerSession(state);
+		serverRefCount++;
+		const sessionUrl = `${sharedUrl}/s/${sessionId}`;
+		return {
+			reviewId: sessionId,
+			port: sharedPort,
+			portSource: sharedPortSource,
+			url: sessionUrl,
+			waitForDecision: () => state.decisionPromise,
+			onDecision: (listener) => {
+				state.decisionListeners.add(listener);
+				return () => state.decisionListeners.delete(listener);
+			},
+			waitForDone: state.donePromise ? () => state.donePromise! : undefined,
+			stop: () => {
+				unregisterSession(sessionId);
+				serverRefCount--;
+				if (serverRefCount <= 0) {
+					sharedServer?.close();
+					sharedServer = null;
+					serverRefCount = 0;
+				}
+			},
+		};
+	}
+
+	const addr = server.address() as { port: number };
 	sharedServer = server;
-	sharedPort = result.port;
-	sharedPortSource = result.portSource;
-	sharedUrl = result.url;
+	sharedHtmlContent = options.htmlContent;
+	sharedPort = addr.port;
+	sharedPortSource = 'env';
+	sharedUrl = buildServerUrl(host, addr.port);
 
 	// Register the initial session
 	registerSession(state);
