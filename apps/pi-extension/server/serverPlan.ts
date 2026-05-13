@@ -540,6 +540,8 @@ export async function startPlanReviewServer(options: {
 			deleteDraft(draftKey);
 			publishDecision({ approved: false, feedback, savedPath });
 			json(res, { ok: true, savedPath });
+		} else if (url.pathname.startsWith("/api/")) {
+			json(res, { error: "Not found", path: url.pathname }, 404);
 		} else {
 			html(res, options.htmlContent);
 		}

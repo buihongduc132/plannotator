@@ -694,6 +694,8 @@ export async function startReviewServer(options: {
 				const message = err instanceof Error ? err.message : "Failed to process feedback";
 				json(res, { error: message }, 500);
 			}
+		} else if (apiPath.startsWith("/api/")) {
+			json(res, { error: "Not found", path: apiPath }, 404);
 		} else {
 			html(res, options.htmlContent);
 		}

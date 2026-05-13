@@ -548,7 +548,11 @@ port,
           // --- API: Create a new plan session (HTTP API, for remote CLI deployments) ---
           if ((apiPath === "/api/sessions" || apiPath.startsWith("/s/") && apiPath.endsWith("/api/sessions")) && req.method === "POST") {
             try {
-              const body = await req.json().catch(() => ({})) as { plan?: string; mode?: string; cwd?: string; name?: string };
+              const body = await req.json().catch(() => ({})) as {
+                plan?: string; mode?: string; cwd?: string; name?: string;
+                origin?: string; permissionMode?: string;
+                sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string;
+              };
               if (!body.plan) {
                 return Response.json({ error: "plan is required" }, { status: 400 });
               }
@@ -575,11 +579,11 @@ port,
               const httpSessionCtx: SessionContext = {
                 sessionId: sid,
                 plan: body.plan,
-                origin: "http-api",
-                permissionMode: undefined,
-                sharingEnabled: true,
-                shareBaseUrl: ctx.shareBaseUrl,
-                pasteApiUrl: ctx.pasteApiUrl,
+                origin: (body.origin as Origin) ?? "http-api",
+                permissionMode: body.permissionMode,
+                sharingEnabled: body.sharingEnabled ?? true,
+                shareBaseUrl: body.shareBaseUrl ?? ctx.shareBaseUrl,
+                pasteApiUrl: body.pasteApiUrl ?? ctx.pasteApiUrl,
                 mode: httpMode,
                 customPlanPath: undefined,
                 opencodeClient: undefined,
@@ -1154,6 +1158,11 @@ port,
           ) {
             ctx.resolveDone?.();
             return Response.json({ ok: true });
+          }
+
+          // API routes that fell through to here should 404, not serve HTML
+          if (apiPath.startsWith("/api/")) {
+            return Response.json({ error: "Not found", path: apiPath }, { status: 404 });
           }
 
           // Serve embedded HTML for all other routes (SPA)

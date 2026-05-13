@@ -115,11 +115,22 @@ export async function startMultiSessionPlanServer(options: {
 			const res = await fetch(`${probe.url}/api/sessions`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ plan: options.plan, sessionId: newSessionId, mode: options.mode }),
+				body: JSON.stringify({
+					plan: options.plan,
+					sessionId: newSessionId,
+					mode: options.mode,
+					origin: options.origin,
+					permissionMode: options.permissionMode,
+					sharingEnabled: options.sharingEnabled,
+					shareBaseUrl: options.shareBaseUrl,
+					pasteApiUrl: options.pasteApiUrl,
+				}),
 			});
 			if (!res.ok) throw new Error(`POST /api/sessions failed: ${res.status}`);
 
-			const sessionUrl = `${probe.url}/s/${newSessionId}`;
+			const responseData = (await res.json()) as { sessionId?: string; url?: string };
+			const resolvedSessionId = responseData.sessionId || newSessionId;
+			const sessionUrl = `${probe.url}/s/${resolvedSessionId}`;
 
 			// Return client-mode result — stop is no-op, decision polling
 			let decisionResolve: (value: any) => void;
@@ -146,7 +157,7 @@ export async function startMultiSessionPlanServer(options: {
 					return;
 				}
 				try {
-					const r = await fetch(`${probe.url}/api/sessions/${newSessionId}/decision`);
+					const r = await fetch(`${probe.url}/api/sessions/${resolvedSessionId}/decision`);
 					if (r.ok) {
 						const data = (await r.json()) as any;
 						if (data.settled) {
@@ -163,7 +174,7 @@ export async function startMultiSessionPlanServer(options: {
 			}, 1000);
 
 			return {
-				reviewId: newSessionId,
+				reviewId: resolvedSessionId,
 				port: fixedPort,
 				portSource: "env" as const,
 				url: sessionUrl,
@@ -242,12 +253,22 @@ export async function startMultiSessionPlanServer(options: {
 		// --- Global endpoints (not session-specific) ---
 		if (apiPath === "/api/sessions" && req.method === "POST") {
 			try {
-				const body = (await parseBody(req)) as { plan?: string; mode?: string; name?: string; sessionId?: string };
+				const body = (await parseBody(req)) as {
+					plan?: string; mode?: string; name?: string; sessionId?: string;
+					origin?: string; permissionMode?: string;
+					sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string;
+				};
 				if (!body.plan) { json(res, { error: "plan is required" }, 400); return; }
 				const newSessionId = body.sessionId || randomUUID();
 				const newState = createSessionState({
 					plan: body.plan,
 					sessionId: newSessionId,
+					origin: body.origin,
+					permissionMode: body.permissionMode,
+					sharingEnabled: body.sharingEnabled,
+					shareBaseUrl: body.shareBaseUrl,
+					pasteApiUrl: body.pasteApiUrl,
+					htmlContent: sharedHtmlContent,
 				});
 				registerSession(newState);
 				json(res, {
@@ -363,7 +384,7 @@ export async function startMultiSessionPlanServer(options: {
 		if (slug) {
 			const sessState = getSession(slug);
 			if (!sessState) {
-				json(res, { error: "Session not found", sessionId: slug }, 404);
+				html(res, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Session Not Found</title><style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#a1a1aa}main{text-align:center;max-width:480px;padding:2rem}h1{font-size:1.25rem;margin-bottom:0.5rem;color:#f4f4f5}p{color:#71717a;font-size:0.875rem;line-height:1.5}code{background:#27272a;padding:0.15em 0.4em;border-radius:4px;font-size:0.8rem}</style></head><body><main><h1>Session Not Found</h1><p>Session <code>${slug}</code> is no longer active.<br>It may have been closed or the server was restarted.</p></main></body></html>`);
 				return;
 			}
 			const content = sessState.htmlContent || sharedHtmlContent;
