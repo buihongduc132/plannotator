@@ -190,15 +190,6 @@ const resolveAgentCwd = (): string =>
   const agentJobs = createAgentJobHandler({
     mode: "review",
     getServerUrl: () => serverUrl,
-    getCwd: resolveAgentCwd,
-const getCwd = () => {
-    if (options.agentCwd) return options.agentCwd;
-    return resolveVcsCwd(currentDiffType, gitContext?.cwd) ?? process.cwd();
-  };
-
-  const agentJobs = createAgentJobHandler({
-    mode: "review",
-    getServerUrl: () => serverUrl,
     getCwd,
 
     async buildCommand(provider, config) {

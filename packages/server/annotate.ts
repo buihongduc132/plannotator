@@ -11,7 +11,6 @@
  *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
  */
 
-import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
 import { isRemoteSession, getServerPort, getServerHost, getServerUrl } from "./remote";
 import { extractSessionSlug, injectSessionPath } from "./index";
 import { getRepoInfo } from "./repo";
@@ -109,9 +108,9 @@ export async function startAnnotateServer(
     pasteApiUrl,
     gate = false,
     onReady,
-    // REQ-14: sessionId and cwd enable /s/<sessionId>/api/... routing
     cwd,
   } = options;
+  // REQ-14: sessionId and cwd enable /s/<sessionId>/api/... routing
   const sessionId = options.sessionId ?? crypto.randomUUID();
 
   const isRemote = isRemoteSession();
@@ -166,18 +165,15 @@ export async function startAnnotateServer(
   // Start server with retry logic
   let server: ReturnType<typeof Bun.serve> | null = null;
 
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     // After the first EADDRINUSE, fall back to a dynamic port so multiple servers
     // can coexist (PLANNOTATOR_PORT defines the *preferred* port, not a hard requirement)
     const port = attempt === 1 ? configuredPortValue : 0;
 
     try {
       server = Bun.serve({
-hostname: getServerHostname(),
-        port: configuredPort,
-port,
-port,
         hostname: getServerHost(),
+        port,
 
         async fetch(req, server) {
           const url = new URL(req.url);
@@ -261,13 +257,10 @@ port,
           }
 
           // API: Serve a linked markdown document
-// Inject source file's directory as base for relative path resolution.
+          // Inject source file's directory as base for relative path resolution.
           // Skip base injection for URL annotations — there's no local directory to resolve against.
-          if (url.pathname === "/api/doc" && req.method === "GET") {
-            if (!url.searchParams.has("base") && !/^https?:\/\//i.test(filePath)) {
-// Inject source file's directory as base for relative path resolution
           if (apiPath === "/api/doc" && req.method === "GET") {
-            if (!url.searchParams.has("base")) {
+            if (!url.searchParams.has("base") && !/^https?:\/\//i.test(filePath)) {
               const docUrl = new URL(req.url);
               docUrl.searchParams.set("base", dirname(filePath));
               return handleDoc(new Request(docUrl.toString()));
@@ -321,7 +314,7 @@ port,
           }
 
           // API: Approve the annotation session (review-gate UX, #570)
-          if (url.pathname === "/api/approve" && req.method === "POST") {
+          if (apiPath === "/api/approve" && req.method === "POST") {
             deleteDraft(draftKey);
             resolveDecision({ feedback: "", annotations: [], approved: true });
             return Response.json({ ok: true });
@@ -381,24 +374,24 @@ port,
       });
 
       break; // Success, exit retry loop
-} catch (err: unknown) {
-        // Bun surfaces EADDRINUSE as "Failed to start server. Is port X in use?" — match
-        // that message text since err.code may be undefined in bundled builds.
-        const errMsg = err instanceof Error ? err.message : String(err);
-        const errCode = (err as { code?: unknown }).code;
-        const hasEADDRINUSE =
-          errMsg.toLowerCase().includes("in use") ||
-          errCode === "EADDRINUSE";
+    } catch (err: unknown) {
+      // Bun surfaces EADDRINUSE as "Failed to start server. Is port X in use?" — match
+      // that message text since err.code may be undefined in bundled builds.
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const errCode = (err as { code?: unknown }).code;
+      const hasEADDRINUSE =
+        errMsg.toLowerCase().includes("in use") ||
+        errCode === "EADDRINUSE";
 
-        if (hasEADDRINUSE && attempt < MAX_RETRIES) {
-          await Bun.sleep(RETRY_DELAY_MS);
-          continue;
-        }
-
-        // Retry exhausted with EADDRINUSE (should not normally happen since we fall back
-        // to port 0 on retry), or a completely unrelated error — propagate it.
-        throw err;
+      if (hasEADDRINUSE && attempt < MAX_RETRIES) {
+        await Bun.sleep(RETRY_DELAY_MS);
+        continue;
       }
+
+      // Retry exhausted with EADDRINUSE (should not normally happen since we fall back
+      // to port 0 on retry), or a completely unrelated error — propagate it.
+      throw err;
+    }
   }
 
   if (!server) {

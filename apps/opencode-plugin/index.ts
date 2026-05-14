@@ -432,11 +432,9 @@ Do NOT proceed with implementation until your plan is approved.`);
     },
   };
 
-if (shouldRegisterSubmitPlan(workflowOptions)) {
+  if (shouldRegisterSubmitPlan(workflowOptions)) {
     plugin.tool = {
       submit_plan: tool({
-tool: {
-submit_plan: tool({
         description:
           "Planning tool used to submit a plan to the user for review. Before calling this tool you must conduct interactive and exploratory analysis in order to submit a quality plan. Ask questions. Explore the codebase for context if needed. Only call submit_plan once you have enough details to create a quality plan. Work with the user to get those details. Pass either markdown text or an absolute path to a .md file. Use use_latest_message: true to submit the latest assistant message from the current session as the plan.",
         args: {
@@ -701,7 +699,7 @@ Proceed with implementation, incorporating these notes where applicable.`;
           }
         },
       }),
-annotate_last: tool({
+      annotate_last: tool({
         description:
           "Annotate the last assistant message from the current OpenCode session with feedback.",
         args: {},
@@ -780,8 +778,10 @@ annotate_last: tool({
           return `# Annotations submitted.\n\n${result.feedback}`;
         },
       }),
-    },
-  };
+    };
+  }
+
+  return plugin;
 };
 
 export default PlannotatorPlugin;
