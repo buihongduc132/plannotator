@@ -66,7 +66,16 @@ async function main() {
   // To keep the process alive, start a minimal "dummy" session
   // that just listens and registers itself.
   // Real sessions are created by calling plannotator CLI from any machine.
-  const { port, sessionId, stop } = await startPlannotatorServer({
+  // NOTE: waitForDecision is destructured but intentionally NOT consumed here.
+  // This is the initial "dummy" archive session that keeps the server alive.
+  // In archive mode, decisionPromise is a never-resolving placeholder
+  // (new Promise(() => {}) in packages/server/index.ts).
+  //
+  // Real sessions register via POST /api/sessions from remote clients.
+  // Those sessions have their own decisionPromise stored in sessionRegistry.
+  // The registering client polls GET /s/<sessionId>/api/sessions/{id}/decision
+  // to observe the approve/deny result — the server itself does not await it.
+  const { port, sessionId, stop, waitForDecision: _waitForDecision } = await startPlannotatorServer({
     plan: "[Remote server] Use 'plannotator last' or 'plannotator annotate <file.md>' from any machine to start a session targeting this server",
     origin: "remote-server",
     htmlContent: planHtmlContent,
@@ -97,7 +106,12 @@ registerSession({
   console.log(`[plannotator] Sessions use /s/<sessionId>/api/* URL routing`);
   console.log(`[plannotator] Remote: ${remote ? "yes (0.0.0.0)" : "no (127.0.0.1)"}`);
 
-  // Keep alive
+  // Prevent unused-variable lint for intentionally unconsumed waitForDecision
+  void _waitForDecision;
+
+  // Keep alive — this never-resolving promise keeps the process running indefinitely.
+  // The server handles real sessions via HTTP (POST /api/sessions) and
+  // decision polling (GET /s/<id>/api/sessions/{id}/decision).
   await new Promise(() => {});
 }
 

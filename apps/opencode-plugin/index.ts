@@ -198,8 +198,8 @@ export const PlannotatorPlugin: Plugin = async (ctx, rawOptions?: PlannotatorOpe
   const workflowOptions = normalizeWorkflowOptions(rawOptions);
 
   // Preload HTML in background — populates the sync cache before first use
-  Bun.file(resolveBundledHtmlPath("plannotator.html")).text().then(h => { _planHtml = h; });
-  Bun.file(resolveBundledHtmlPath("review-editor.html")).text().then(h => { _reviewHtml = h; });
+  Bun.file(resolveBundledHtmlPath("plannotator.html")).text().then(h => { _planHtml = h; }).catch(() => {});
+  Bun.file(resolveBundledHtmlPath("review-editor.html")).text().then(h => { _reviewHtml = h; }).catch(() => {});
 
   let cachedAgents: any[] | null = null;
 
@@ -666,6 +666,9 @@ const server = await startPlannotatorServer({
                   server.waitForDecision(context.sessionID).then((r) => {
                     clearTimeout(timeoutId);
                     resolve(r);
+                  }).catch((err: unknown) => {
+                    clearTimeout(timeoutId);
+                    resolve({ approved: false, feedback: `Decision failed: ${err instanceof Error ? err.message : String(err)}` });
                   });
                 });
             await Bun.sleep(1500);

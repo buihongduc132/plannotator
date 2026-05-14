@@ -1000,13 +1000,13 @@ port,
               // Run integrations in parallel — they're independent
               const promises: Promise<void>[] = [];
               if (body.obsidian?.vaultPath && body.obsidian?.plan) {
-                promises.push(saveToObsidian(body.obsidian).then(r => { results.obsidian = r; }));
+                promises.push(saveToObsidian(body.obsidian).then(r => { results.obsidian = r; }).catch(() => { /* integration save failed, non-critical */ }));
               }
               if (body.bear?.plan) {
-                promises.push(saveToBear(body.bear).then(r => { results.bear = r; }));
+                promises.push(saveToBear(body.bear).then(r => { results.bear = r; }).catch(() => { /* integration save failed, non-critical */ }));
               }
               if (body.octarine?.plan && body.octarine?.workspace) {
-                promises.push(saveToOctarine(body.octarine).then(r => { results.octarine = r; }));
+                promises.push(saveToOctarine(body.octarine).then(r => { results.octarine = r; }).catch(() => { /* integration save failed, non-critical */ }));
               }
               await Promise.allSettled(promises);
 
@@ -1070,13 +1070,13 @@ port,
               const integrationResults: Record<string, IntegrationResult> = {};
               const integrationPromises: Promise<void>[] = [];
               if (body.obsidian?.vaultPath && body.obsidian?.plan) {
-                integrationPromises.push(saveToObsidian(body.obsidian).then(r => { integrationResults.obsidian = r; }));
+                integrationPromises.push(saveToObsidian(body.obsidian).then(r => { integrationResults.obsidian = r; }).catch(() => { /* integration save failed, non-critical */ }));
               }
               if (body.bear?.plan) {
-                integrationPromises.push(saveToBear(body.bear).then(r => { integrationResults.bear = r; }));
+                integrationPromises.push(saveToBear(body.bear).then(r => { integrationResults.bear = r; }).catch(() => { /* integration save failed, non-critical */ }));
               }
               if (body.octarine?.plan && body.octarine?.workspace) {
-                integrationPromises.push(saveToOctarine(body.octarine).then(r => { integrationResults.octarine = r; }));
+                integrationPromises.push(saveToOctarine(body.octarine).then(r => { integrationResults.octarine = r; }).catch(() => { /* integration save failed, non-critical */ }));
               }
               await Promise.allSettled(integrationPromises);
 

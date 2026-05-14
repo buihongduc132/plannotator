@@ -87,6 +87,9 @@ export function getServerPort(): number {
  */
 export function getServerHostname(): string {
   return isRemoteSession() ? "0.0.0.0" : LOOPBACK_HOST;
+}
+
+/**
 * Get the server hostname to bind to.
  *
  * Remote: binds to 0.0.0.0 so any machine on the network can reach it.

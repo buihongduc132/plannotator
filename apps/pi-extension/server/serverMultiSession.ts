@@ -183,7 +183,7 @@ export async function startMultiSessionPlanServer(options: {
 					clientListeners.add(listener);
 					decisionPromise.then((r) => {
 						if (clientListeners.has(listener)) listener(r);
-					});
+					}).catch(() => { /* decision rejected, listener not called */ });
 					return () => { clientListeners.delete(listener); };
 				},
 				waitForDone: undefined,

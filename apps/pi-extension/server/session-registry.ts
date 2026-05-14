@@ -299,13 +299,13 @@ async function runIntegrations(
 	const octConfig = body.octarine as OctarineConfig | undefined;
 
 	if (obsConfig?.vaultPath && obsConfig?.plan) {
-		promises.push(saveToObsidian(obsConfig).then((r) => { results.obsidian = r; }));
+		promises.push(saveToObsidian(obsConfig).then((r) => { results.obsidian = r; }).catch(() => { /* integration save failed, non-critical */ }));
 	}
 	if (bearConfig?.plan) {
-		promises.push(saveToBear(bearConfig).then((r) => { results.bear = r; }));
+		promises.push(saveToBear(bearConfig).then((r) => { results.bear = r; }).catch(() => { /* integration save failed, non-critical */ }));
 	}
 	if (octConfig?.plan && octConfig?.workspace) {
-		promises.push(saveToOctarine(octConfig).then((r) => { results.octarine = r; }));
+		promises.push(saveToOctarine(octConfig).then((r) => { results.octarine = r; }).catch(() => { /* integration save failed, non-critical */ }));
 	}
 
 	await Promise.allSettled(promises);

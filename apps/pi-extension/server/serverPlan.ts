@@ -400,21 +400,21 @@ export async function startPlanReviewServer(options: {
 					promises.push(
 						saveToObsidian(obsConfig).then((r) => {
 							results.obsidian = r;
-						}),
+						}).catch(() => { /* integration save failed, non-critical */ }),
 					);
 				}
 				if (bearConfig?.plan) {
 					promises.push(
 						saveToBear(bearConfig).then((r) => {
 							results.bear = r;
-						}),
+						}).catch(() => { /* integration save failed, non-critical */ }),
 					);
 				}
 				if (octConfig?.plan && octConfig?.workspace) {
 					promises.push(
 						saveToOctarine(octConfig).then((r) => {
 							results.octarine = r;
-						}),
+						}).catch(() => { /* integration save failed, non-critical */ }),
 					);
 				}
 				await Promise.allSettled(promises);
@@ -459,21 +459,21 @@ export async function startPlanReviewServer(options: {
 					integrationPromises.push(
 						saveToObsidian(obsConfig).then((r) => {
 							integrationResults.obsidian = r;
-						}),
+						}).catch(() => { /* integration save failed, non-critical */ }),
 					);
 				}
 				if (bearConfig?.plan) {
 					integrationPromises.push(
 						saveToBear(bearConfig).then((r) => {
 							integrationResults.bear = r;
-						}),
+						}).catch(() => { /* integration save failed, non-critical */ }),
 					);
 				}
 				if (octConfig?.plan && octConfig?.workspace) {
 					integrationPromises.push(
 						saveToOctarine(octConfig).then((r) => {
 							integrationResults.octarine = r;
-						}),
+						}).catch(() => { /* integration save failed, non-critical */ }),
 					);
 				}
 				await Promise.allSettled(integrationPromises);

@@ -178,6 +178,8 @@ export async function startReviewServer(
   if (gitContext && !options.initialBase && !isPRMode) {
     detectRemoteDefaultBranch(gitRuntime, gitContext.cwd).then((remote) => {
       if (remote && !baseEverSwitched) currentBase = remote;
+    }).catch(() => {
+      // Branch detection failed — keep current base fallback
     });
   }
 
