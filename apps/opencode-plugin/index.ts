@@ -513,20 +513,6 @@ Use /plannotator-last or /plannotator-annotate for manual review, or set workflo
           }
 
           const sharingEnabled = await getSharingEnabled();
-const server = await startPlannotatorServer({
-            plan: planContent,
-            origin: "opencode",
-            sharingEnabled,
-            shareBaseUrl: getShareBaseUrl(),
-            pasteApiUrl: getPasteApiUrl(),
-            htmlContent: getPlanHtml(),
-            opencodeClient: ctx.client,
-            sessionId: context.sessionID,
-            cwd: ctx.directory,
-            onReady: async (url, isRemote, port) => {
-              handleServerReady(url, isRemote, port);
-            },
-          });
           const timeoutSeconds = getPlanTimeoutSeconds();
           const timeoutMs = timeoutSeconds === null ? null : timeoutSeconds * 1000;
 

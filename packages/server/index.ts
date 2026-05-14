@@ -115,6 +115,9 @@ export interface SessionContext {
   // Plan review decision (REQ-09: resolution is handled via decisionResolvers Map, keyed by sessionId)
   decisionPromise: Promise<DecisionResult>;
 
+  // Cached decision result for SSE stream (set on approve/deny, read by /api/decision)
+  __decisionResult?: DecisionResult;
+
   // Handler instances
   editorAnnotations: ReturnType<typeof createEditorAnnotationHandler> | null;
   externalAnnotations: ReturnType<typeof createExternalAnnotationHandler> | null;
@@ -357,7 +360,7 @@ function resolveDecision(sessionId: string, result: DecisionResult): void {
   // Store result on the session context so poll/SSE endpoints can retrieve it
   const ctx = sessionRegistry.get(sessionId);
   if (ctx) {
-    (ctx as any).__decisionResult = result;
+    ctx.__decisionResult = result;
   }
   decisionResolvers.delete(sessionId);
   resolver(result);
@@ -722,7 +725,7 @@ port,
             }
             // Decision was already resolved — return the result stored on the session
             // The resolveDecision function stores the result, so we check if it exists
-            const storedResult = (decisionCtx as any).__decisionResult;
+            const storedResult = decisionCtx.__decisionResult;
             if (storedResult) {
               return Response.json({
                 approved: storedResult.approved,
@@ -753,7 +756,7 @@ port,
                 // Check if already decided
                 const resolver = decisionResolvers.get(decisionCtx.sessionId);
                 if (!resolver) {
-                  const storedResult = (decisionCtx as any).__decisionResult;
+                  const storedResult = decisionCtx.__decisionResult;
                   if (storedResult) {
                     controller.enqueue(encoder.encode(`event: decision\ndata: ${JSON.stringify(storedResult)}\n\n`));
                     controller.close();
@@ -766,7 +769,7 @@ port,
                   const res = decisionResolvers.get(decisionCtx.sessionId);
                   if (!res) {
                     // Resolver was removed — decision was made
-                    const storedResult = (decisionCtx as any).__decisionResult;
+                    const storedResult = decisionCtx.__decisionResult;
                     if (storedResult) {
                       controller.enqueue(encoder.encode(`event: decision\ndata: ${JSON.stringify(storedResult)}\n\n`));
                     }
