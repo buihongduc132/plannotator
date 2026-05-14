@@ -16,23 +16,28 @@ export function parseBody(
 	return new Promise((resolve) => {
 		let data = "";
 		let size = 0;
+		let settled = false;
 		req.on("data", (chunk: string) => {
 			size += chunk.length;
 			if (size > MAX_BODY_SIZE) {
 				req.destroy();
-				resolve({});
+				if (!settled) { settled = true; resolve({}); }
 				return;
 			}
 			data += chunk;
 		});
 		req.on("end", () => {
+			if (settled) return;
 			try {
 				resolve(JSON.parse(data));
 			} catch {
 				resolve({});
 			}
+			settled = true;
 		});
-		req.on("error", () => resolve({}));
+		req.on("error", () => {
+			if (!settled) { settled = true; resolve({}); }
+		});
 	});
 }
 

@@ -64,6 +64,8 @@ class PiProcess {
 			for (const listener of this.listeners) {
 				listener({ type: "process_exited" });
 			}
+		}).catch((err) => {
+			console.error("[pi-sdk] process exit monitoring failed:", err);
 		});
 	}
 
