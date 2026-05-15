@@ -116,8 +116,28 @@ async function openBrowserAndWait<T>(
 	server: { url: string; stop: () => void },
 	ctx: ExtensionContext,
 	waitForResult: () => Promise<T>,
+	signal?: AbortSignal,
 ): Promise<T> {
 	openBrowserForServer(server.url, ctx);
+
+	if (signal) {
+		const abortPromise = new Promise<never>((_resolve, reject) => {
+			if (signal.aborted) {
+				reject(new DOMException("The operation was aborted.", "AbortError"));
+				return;
+			}
+			const handler = () => reject(new DOMException("The operation was aborted.", "AbortError"));
+			signal.addEventListener("abort", handler, { once: true });
+		});
+
+		try {
+			const result = await Promise.race([waitForResult(), abortPromise]);
+			await delay(1500);
+			return result;
+		} finally {
+			server.stop();
+		}
+	}
 
 	const result = await waitForResult();
 	await delay(1500);
@@ -161,14 +181,33 @@ export async function startPlanReviewBrowserSession(
 export async function openPlanReviewBrowser(
 	ctx: ExtensionContext,
 	planContent: string,
+	signal?: AbortSignal,
 ): Promise<PlanReviewDecision> {
 	const session = await startPlanReviewBrowserSession(ctx, planContent);
+
+	if (signal) {
+		const abortPromise = new Promise<never>((_resolve, reject) => {
+			if (signal.aborted) {
+				reject(new DOMException("The operation was aborted.", "AbortError"));
+				return;
+			}
+			const handler = () => reject(new DOMException("The operation was aborted.", "AbortError"));
+			signal.addEventListener("abort", handler, { once: true });
+		});
+
+		try {
+			return await Promise.race([session.waitForDecision(), abortPromise]);
+		} finally {
+			session.stop();
+		}
+	}
+
 	return session.waitForDecision();
 }
 
 export async function openCodeReview(
 	ctx: ExtensionContext,
-	options: { cwd?: string; defaultBranch?: string; diffType?: DiffType; prUrl?: string } = {},
+	options: { cwd?: string; defaultBranch?: string; diffType?: DiffType; prUrl?: string; signal?: AbortSignal } = {},
 ): Promise<{ approved: boolean; feedback?: string; annotations?: unknown[]; agentSwitch?: string; exit?: boolean }> {
 	if (!ctx.hasUI || !reviewHtmlContent) {
 		throw new Error("Plannotator code review browser is unavailable in this session.");
@@ -370,7 +409,7 @@ export async function openCodeReview(
 		sessionId: buildPiPlanSessionOptions(ctx).sessionId,
 	});
 
-	return openBrowserAndWait(server, ctx, server.waitForDecision);
+	return openBrowserAndWait(server, ctx, server.waitForDecision, options.signal);
 }
 
 export async function openMarkdownAnnotation(
@@ -381,6 +420,7 @@ export async function openMarkdownAnnotation(
 	folderPath?: string,
 	sourceInfo?: string,
 	gate?: boolean,
+	signal?: AbortSignal,
 ): Promise<{ feedback: string; exit?: boolean; approved?: boolean }> {
 	if (!ctx.hasUI || !planHtmlContent) {
 		throw new Error("Plannotator annotation browser is unavailable in this session.");
@@ -413,20 +453,22 @@ export async function openMarkdownAnnotation(
 		...buildPiPlanSessionOptions(ctx),
 	});
 
-	return openBrowserAndWait(server, ctx, server.waitForDecision);
+	return openBrowserAndWait(server, ctx, server.waitForDecision, signal);
 }
 
 export async function openLastMessageAnnotation(
 	ctx: ExtensionContext,
 	lastText: string,
 	gate?: boolean,
+	signal?: AbortSignal,
 ): Promise<{ feedback: string; exit?: boolean; approved?: boolean }> {
-	return openMarkdownAnnotation(ctx, "last-message", lastText, "annotate-last", undefined, undefined, gate);
+	return openMarkdownAnnotation(ctx, "last-message", lastText, "annotate-last", undefined, undefined, gate, signal);
 }
 
 export async function openArchiveBrowserAction(
 	ctx: ExtensionContext,
 	customPlanPath?: string,
+	signal?: AbortSignal,
 ): Promise<{ opened: boolean }> {
 	if (!ctx.hasUI || !planHtmlContent) {
 		throw new Error("Plannotator archive browser is unavailable in this session.");
@@ -448,5 +490,5 @@ export async function openArchiveBrowserAction(
 			await server.waitForDone();
 		}
 		return { opened: true };
-	});
+	}, signal);
 }

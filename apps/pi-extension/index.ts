@@ -554,7 +554,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 			}),
 		}) as any,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			// Guard: must be in planning phase
 			if (phase !== "planning") {
 				return {
@@ -668,7 +668,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 
 			let result: Awaited<ReturnType<typeof openPlanReviewBrowser>>;
 			try {
-				result = await openPlanReviewBrowser(ctx, planContent);
+				result = await openPlanReviewBrowser(ctx, planContent, signal);
 			} catch (err) {
 				const message = `Failed to start plan review UI: ${getStartupErrorMessage(err)}`;
 				ctx.ui.notify(message, "error");
