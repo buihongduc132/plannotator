@@ -93,6 +93,7 @@ import {
 } from "./session-log";
 import { findCodexRolloutByThreadId, getLastCodexMessage } from "./codex-session";
 import { findCopilotPlanContent, findCopilotSessionForCwd, getLastCopilotMessage } from "./copilot-session";
+import { createSessionState, registerSession as registerRegistrySession, unregisterSession as unregisterRegistrySession } from "./session-registry";
 import {
   formatInteractiveNoArgClarification,
   formatTopLevelHelp,
@@ -920,6 +921,7 @@ if (args[0] === "sessions") {
   // LAST MESSAGE PLAN REVIEW MODE
   // Opens the last assistant message in the plan review UI
   // (not annotate — this uses the plan viewer)
+  // Uses session-registry for decision state tracking.
   // ============================================
 
   const projectRoot = process.env.PLANNOTATOR_CWD || process.cwd();
@@ -1023,14 +1025,30 @@ if (args[0] === "sessions") {
     label: `last-message-${planProject}`,
   });
 
+  // Also register in session-registry for decision state tracking
+  const registryState = createSessionState({
+    sessionId: planSessionId!,
+    port,
+    project: planProject,
+    mode: "plan",
+  });
+  registerRegistrySession(planSessionId!, registryState);
+
   const decision = await waitForDecision(planSessionId!);
 
   if (decision.approved) {
+    registryState.transition("approve");
+    unregisterRegistrySession(planSessionId!);
     console.log("The user approved.");
   } else if (decision.feedback) {
+    registryState.transition("deny");
+    unregisterRegistrySession(planSessionId!);
     console.log(decision.feedback);
+  } else {
+    registryState.transition("dismiss");
+    unregisterRegistrySession(planSessionId!);
   }
-  // else: dismissed — emit nothing so slash command interprets as case 2
+  // dismissed — emit nothing so slash command interprets as case 2
 
   await Bun.sleep(500);
   stop();

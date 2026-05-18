@@ -6,13 +6,11 @@
  * plan content, decision state, and draft key.
  *
  * This module provides the data structures (SessionContext, decision state machine,
- * session path routing) used by the hook's multi-session features. It is consumed
- * by session-registry.test.ts (unit tests) and will be wired into the multi-session
- * HTTP server when that feature is added.
+ * session path routing) used by the hook's multi-session features.
  *
- * Currently used indirectly: the `createSessionState` function defines the session
- * model that the `last-message` subcommand follows, and `parseSessionPath` will
- * enable /s/<sessionId>/api/* routing in the hook server.
+ * Used by: `last-message` subcommand (decision state tracking),
+ * session-registry.test.ts (unit tests), and will power /s/<sessionId>/api/* routing
+ * when the multi-session HTTP server is added.
  */
 
 import { randomUUID } from "node:crypto";
