@@ -14,6 +14,23 @@ import { detectWSL, html, json, parseBody, requestUrl } from "./helpers.js";
 
 import { listenOnPort } from "./network.js";
 
+/** Regex to extract slug from bare session paths: /s/<slug> or /s/<slug>/anything */
+const BARE_SESSION_SLUG_REGEX = /^\/s\/([^/]+)(?:\/.*)?$/;
+
+function extractSessionSlug(pathname: string): string | null {
+	const match = BARE_SESSION_SLUG_REGEX.exec(pathname);
+	return match ? match[1] : null;
+}
+
+/** Inject session base path into HTML for client-side routing. */
+function injectSessionPath(htmlContent: string, slug: string): string {
+	if (!htmlContent) return htmlContent;
+	const headCloseIdx = htmlContent.lastIndexOf("</head>");
+	if (headCloseIdx === -1) return htmlContent;
+	const injection = `<script>window.__PLANNOTATOR_SESSION_PATH__="/s/${slug}"<` + `/script>`;
+	return htmlContent.slice(0, headCloseIdx) + injection + htmlContent.slice(headCloseIdx);
+}
+
 import { getRepoInfo } from "./project.js";
 import {
 	handleDocRequest,
@@ -101,8 +118,15 @@ export async function startAnnotateServer(options: {
 			);
 			return;
 		}
-		if (sessionId && apiPath.startsWith("/s/")) {
-			json(res, { error: "Session mismatch" }, 403);
+		// REQ-14: Bare /s/{sessionId} path (SPA navigation) — inject session base
+		// and serve HTML. Only reject if the slug doesn't match our session.
+		if (sessionId && !routeSessionId && apiPath.startsWith("/s/")) {
+			const slug = extractSessionSlug(url.pathname);
+			if (slug && slug !== sessionId) {
+				json(res, { error: "Session mismatch", message: `URL session "${slug}" does not match expected "${sessionId}"` }, 403);
+				return;
+			}
+			html(res, injectSessionPath(options.htmlContent, sessionId));
 			return;
 		}
 
