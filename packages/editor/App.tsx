@@ -8,6 +8,7 @@ import { ImportModal } from '@plannotator/ui/components/ImportModal';
 import { ConfirmDialog } from '@plannotator/ui/components/ConfirmDialog';
 import { Annotation, Block, EditorMode, type InputMethod, type ImageAttachment, type ActionsLabelMode } from '@plannotator/ui/types';
 import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
+import { Tooltip, TooltipProvider } from '@plannotator/ui/components/Tooltip';
 import { AnnotationToolstrip } from '@plannotator/ui/components/AnnotationToolstrip';
 import { StickyHeaderLane } from '@plannotator/ui/components/StickyHeaderLane';
 import { TaterSpriteRunning } from '@plannotator/ui/components/TaterSpriteRunning';
@@ -28,6 +29,7 @@ import { getOctarineSettings, isOctarineConfigured } from '@plannotator/ui/utils
 import { getDefaultNotesApp } from '@plannotator/ui/utils/defaultNotesApp';
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
 import { getPlanSaveSettings } from '@plannotator/ui/utils/planSave';
+import { getApiUrl } from '@plannotator/ui/utils/apiUrl';
 import { getUIPreferences, type UIPreferences, type PlanWidth } from '@plannotator/ui/utils/uiPreferences';
 import { getEditorMode, saveEditorMode } from '@plannotator/ui/utils/editorMode';
 import { getInputMethod, saveInputMethod } from '@plannotator/ui/utils/inputMethod';
@@ -38,6 +40,7 @@ import { ResizeHandle } from '@plannotator/ui/components/ResizeHandle';
 import { OverlayScrollArea } from '@plannotator/ui/components/OverlayScrollArea';
 import { ScrollViewportContext } from '@plannotator/ui/hooks/useScrollViewport';
 import { useOverlayViewport } from '@plannotator/ui/hooks/useOverlayViewport';
+import { useIsMobile } from '@plannotator/ui/hooks/useIsMobile';
 import { PlanHeaderMenu } from '@plannotator/ui/components/PlanHeaderMenu';
 import {
   getPermissionModeSettings,
@@ -47,13 +50,14 @@ import {
 import { PermissionModeSetup } from '@plannotator/ui/components/PermissionModeSetup';
 import { ImageAnnotator } from '@plannotator/ui/components/ImageAnnotator';
 import { deriveImageName } from '@plannotator/ui/components/AttachmentsButton';
-import { useSidebar } from '@plannotator/ui/hooks/useSidebar';
+import { useSidebar, type SidebarTab } from '@plannotator/ui/hooks/useSidebar';
 import { usePlanDiff, type VersionInfo } from '@plannotator/ui/hooks/usePlanDiff';
 import { useLinkedDoc } from '@plannotator/ui/hooks/useLinkedDoc';
 import { useAnnotationDraft } from '@plannotator/ui/hooks/useAnnotationDraft';
 import { useArchive } from '@plannotator/ui/hooks/useArchive';
 import { useEditorAnnotations } from '@plannotator/ui/hooks/useEditorAnnotations';
 import { useExternalAnnotations } from '@plannotator/ui/hooks/useExternalAnnotations';
+import { useSessions } from '@plannotator/ui/hooks/useSessions';
 import { useExternalAnnotationHighlights } from '@plannotator/ui/hooks/useExternalAnnotationHighlights';
 import { buildPlanAgentInstructions } from '@plannotator/ui/utils/planAgentInstructions';
 import { hasNewSettings, markNewSettingsSeen } from '@plannotator/ui/utils/newSettingsHint';
@@ -65,7 +69,19 @@ import { SidebarContainer } from '@plannotator/ui/components/sidebar/SidebarCont
 import type { ArchivedPlan } from '@plannotator/ui/components/sidebar/ArchiveBrowser';
 import { PlanDiffViewer } from '@plannotator/ui/components/plan-diff/PlanDiffViewer';
 import type { PlanDiffMode } from '@plannotator/ui/components/plan-diff/PlanDiffModeSwitcher';
-import { DEMO_PLAN_CONTENT } from './demoPlan';
+// Demo content toggle. Default: the original Real-time Collaboration plan.
+// Opt-in diff-engine stress test: `VITE_DIFF_DEMO=1 bun run dev:hook` swaps
+// in the 20-case Auth Service Refactor test plan. dev-mock-api.ts reads the
+// same env var on the server side so V2/V3 stay paired.
+import { DEMO_PLAN_CONTENT as DEFAULT_DEMO_PLAN_CONTENT } from './demoPlan';
+import { DIFF_DEMO_PLAN_CONTENT } from './demoPlanDiffDemo';
+import { canUseAnnotateWideMode, resolveWideModeExitLayout, type WideModeLayoutSnapshot, type WideModeType } from './wideMode';
+const USE_DIFF_DEMO =
+  import.meta.env.VITE_DIFF_DEMO === '1' ||
+  import.meta.env.VITE_DIFF_DEMO === 'true';
+const DEMO_PLAN_CONTENT = USE_DIFF_DEMO
+  ? DIFF_DEMO_PLAN_CONTENT
+  : DEFAULT_DEMO_PLAN_CONTENT;
 import { useCheckboxOverrides } from './hooks/useCheckboxOverrides';
 
 type NoteAutoSaveResults = {
@@ -85,6 +101,8 @@ const App: React.FC = () => {
   const [showFeedbackPrompt, setShowFeedbackPrompt] = useState(false);
   const [showClaudeCodeWarning, setShowClaudeCodeWarning] = useState(false);
   const [showExitWarning, setShowExitWarning] = useState(false);
+  // When the warning dialog confirms, route to the handler matching the button that opened it.
+  const [exitWarningAction, setExitWarningAction] = useState<'close' | 'approve'>('close');
   const [showAgentWarning, setShowAgentWarning] = useState(false);
   const [agentWarningMessage, setAgentWarningMessage] = useState('');
   const [isPanelOpen, setIsPanelOpen] = useState(() => window.innerWidth >= 768);
@@ -128,12 +146,16 @@ const App: React.FC = () => {
     return () => ro.disconnect();
   }, []);
   const [isApiMode, setIsApiMode] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [origin, setOrigin] = useState<Origin | null>(null);
   const [gitUser, setGitUser] = useState<string | undefined>();
   const [isWSL, setIsWSL] = useState(false);
   const [globalAttachments, setGlobalAttachments] = useState<ImageAttachment[]>([]);
   const [annotateMode, setAnnotateMode] = useState(false);
+  const [gate, setGate] = useState(false);
   const [annotateSource, setAnnotateSource] = useState<'file' | 'message' | 'folder' | null>(null);
+  const [sourceInfo, setSourceInfo] = useState<string | undefined>();
+  const [sourceFilePath, setSourceFilePath] = useState<string | undefined>();
   const [imageBaseDir, setImageBaseDir] = useState<string | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -145,8 +167,12 @@ const App: React.FC = () => {
   const [sharingEnabled, setSharingEnabled] = useState(true);
   const [shareBaseUrl, setShareBaseUrl] = useState<string | undefined>(undefined);
   const [pasteApiUrl, setPasteApiUrl] = useState<string | undefined>(undefined);
-  const [repoInfo, setRepoInfo] = useState<{ display: string; branch?: string } | null>(null);
+  const [repoInfo, setRepoInfo] = useState<{ display: string; branch?: string; host?: string } | null>(null);
   const [projectRoot, setProjectRoot] = useState<string | null>(null);
+const [wideModeType, setWideModeType] = useState<WideModeType | null>(null);
+  const wideModeSnapshotRef = useRef<WideModeLayoutSnapshot | null>(null);
+  const lastAppliedTocEnabledRef = useRef(uiPrefs.tocEnabled);
+const [cwd, setCwd] = useState<string | null>(null);
 
   useEffect(() => {
     document.title = repoInfo ? `${repoInfo.display} · Plannotator` : "Plannotator";
@@ -158,6 +184,7 @@ const App: React.FC = () => {
   const [planDiffMode, setPlanDiffMode] = useState<PlanDiffMode>('clean');
   const [previousPlan, setPreviousPlan] = useState<string | null>(null);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
+  const isMobile = useIsMobile();
 
   const viewerRef = useRef<ViewerHandle>(null);
   // containerRef + scrollViewport both point at the OverlayScrollbars
@@ -183,14 +210,67 @@ const App: React.FC = () => {
   // Sidebar (shared TOC + Version Browser)
   const sidebar = useSidebar(getUIPreferences().tocEnabled);
 
-  // Sync sidebar open state when preference changes in Settings
-  useEffect(() => {
-    if (uiPrefs.tocEnabled) {
-      sidebar.open('toc');
+  const exitWideMode = useCallback((options?: {
+    restore?: boolean;
+    sidebarTab?: SidebarTab;
+    panelOpen?: boolean;
+  }) => {
+    if (wideModeType === null) {
+      if (options?.sidebarTab) sidebar.open(options.sidebarTab);
+      if (options?.panelOpen === true) setIsPanelOpen(true);
+      else if (options?.panelOpen === false) setIsPanelOpen(false);
+      return;
+    }
+
+    const snapshot = wideModeSnapshotRef.current;
+    const layout = resolveWideModeExitLayout(snapshot, options);
+
+    setWideModeType(null);
+    wideModeSnapshotRef.current = null;
+
+    if (layout.sidebarOpen && layout.sidebarTab) {
+      sidebar.open(layout.sidebarTab);
     } else {
       sidebar.close();
     }
-  }, [uiPrefs.tocEnabled]);
+
+    if (layout.panelOpen !== undefined) {
+      setIsPanelOpen(layout.panelOpen);
+    }
+  }, [wideModeType, sidebar.close, sidebar.open]);
+
+  const openSidebarTab = useCallback((tab: SidebarTab) => {
+    if (wideModeType !== null) {
+      exitWideMode({ restore: false, sidebarTab: tab, panelOpen: false });
+      return;
+    }
+    sidebar.open(tab);
+  }, [exitWideMode, wideModeType, sidebar.open]);
+
+  const toggleSidebarTab = useCallback((tab: SidebarTab) => {
+    if (wideModeType !== null) {
+      exitWideMode({ restore: false, sidebarTab: tab, panelOpen: false });
+      return;
+    }
+    sidebar.toggleTab(tab);
+  }, [exitWideMode, wideModeType, sidebar.toggleTab]);
+
+  const handleAnnotationPanelToggle = useCallback(() => {
+    if (wideModeType !== null) {
+      exitWideMode({ restore: false, panelOpen: true });
+      return;
+    }
+    setIsPanelOpen(prev => !prev);
+  }, [exitWideMode, wideModeType]);
+
+  // Sync sidebar open state when preference changes in Settings
+  useEffect(() => {
+    if (wideModeType !== null) return;
+    if (lastAppliedTocEnabledRef.current === uiPrefs.tocEnabled) return;
+    lastAppliedTocEnabledRef.current = uiPrefs.tocEnabled;
+    if (uiPrefs.tocEnabled) sidebar.open('toc');
+    else sidebar.close();
+  }, [wideModeType, sidebar.close, sidebar.open, uiPrefs.tocEnabled]);
 
   // Clear diff view when switching away from versions tab
   useEffect(() => {
@@ -214,11 +294,23 @@ const App: React.FC = () => {
   // Plan diff computation
   const planDiff = usePlanDiff(markdown, previousPlan, versionInfo);
 
+  const linkedDocSidebar = useMemo(() => ({
+    ...sidebar,
+    open: openSidebarTab,
+    toggleTab: toggleSidebarTab,
+  }), [
+    openSidebarTab,
+    sidebar.activeTab,
+    sidebar.close,
+    sidebar.isOpen,
+    toggleSidebarTab,
+  ]);
+
   // Linked document navigation
   const linkedDocHook = useLinkedDoc({
     markdown, annotations, selectedAnnotationId, globalAttachments,
     setMarkdown, setAnnotations, setSelectedAnnotationId, setGlobalAttachments,
-    viewerRef, sidebar,
+    viewerRef, sidebar: linkedDocSidebar, sourceFilePath,
   });
 
   // Archive browser
@@ -227,8 +319,42 @@ const App: React.FC = () => {
     setMarkdown, setAnnotations, setSelectedAnnotationId, setSubmitted,
   });
 
+  const canUseWideMode = useMemo(() => canUseAnnotateWideMode({
+    archiveMode: archive.archiveMode,
+    isPlanDiffActive,
+  }), [archive.archiveMode, isPlanDiffActive]);
+
+  const enterViewMode = useCallback((type: WideModeType) => {
+    if (!canUseWideMode) return;
+    if (wideModeType === null) {
+      wideModeSnapshotRef.current = {
+        sidebarIsOpen: sidebar.isOpen,
+        sidebarTab: sidebar.activeTab,
+        panelOpen: isPanelOpen,
+      };
+    }
+    setWideModeType(type);
+    sidebar.close();
+    setIsPanelOpen(false);
+  }, [canUseWideMode, isPanelOpen, wideModeType, sidebar.activeTab, sidebar.close, sidebar.isOpen]);
+
+  const toggleViewMode = useCallback((type: WideModeType) => {
+    if (wideModeType === type) {
+      exitWideMode();
+    } else {
+      enterViewMode(type);
+    }
+  }, [enterViewMode, exitWideMode, wideModeType]);
+
+  useEffect(() => {
+    if (!canUseWideMode && wideModeType !== null) {
+      exitWideMode();
+    }
+  }, [canUseWideMode, exitWideMode, wideModeType]);
+
   // Markdown file browser (also handles vault dirs via isVault flag)
   const fileBrowser = useFileBrowser();
+  const { sessions, isLoading: isLoadingSessions, fetchSessions, currentSessionId } = useSessions(sessionId, isApiMode);
   const vaultPath = useMemo(() => {
     if (!isVaultBrowserEnabled()) return '';
     return getEffectiveVaultPath(getObsidianSettings());
@@ -277,8 +403,8 @@ const App: React.FC = () => {
   const handleFileBrowserSelect = React.useCallback((absolutePath: string, dirPath: string) => {
     const dirState = fileBrowser.dirs.find(d => d.path === dirPath);
     const buildUrl = dirState?.isVault
-      ? (path: string) => `/api/reference/obsidian/doc?vaultPath=${encodeURIComponent(dirPath)}&path=${encodeURIComponent(path)}`
-      : (path: string) => `/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(dirPath)}`;
+      ? (path: string) => getApiUrl(`/api/reference/obsidian/doc?vaultPath=${encodeURIComponent(dirPath)}&path=${encodeURIComponent(path)}`)
+      : (path: string) => getApiUrl(`/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(dirPath)}`);
     linkedDocHook.open(absolutePath, buildUrl, 'files');
     fileBrowser.setActiveFile(absolutePath);
   }, [linkedDocHook, fileBrowser]);
@@ -288,13 +414,13 @@ const App: React.FC = () => {
     const activeDirState = fileBrowser.dirs.find(d => d.path === fileBrowser.activeDirPath);
     if (activeDirState?.isVault && fileBrowser.activeDirPath) {
       linkedDocHook.open(docPath, (path) =>
-        `/api/reference/obsidian/doc?vaultPath=${encodeURIComponent(fileBrowser.activeDirPath!)}&path=${encodeURIComponent(path)}`
+        getApiUrl(`/api/reference/obsidian/doc?vaultPath=${encodeURIComponent(fileBrowser.activeDirPath!)}&path=${encodeURIComponent(path)}`)
       );
     } else if (fileBrowser.activeFile && fileBrowser.activeDirPath) {
       // When viewing a file browser doc, resolve links relative to current file's directory
       const baseDir = linkedDocHook.filepath?.replace(/\/[^/]+$/, '') || fileBrowser.activeDirPath;
       linkedDocHook.open(docPath, (path) =>
-        `/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(baseDir)}`
+        getApiUrl(`/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(baseDir)}`)
       );
     } else {
       // Pass the current file's directory as base for relative path resolution
@@ -303,7 +429,7 @@ const App: React.FC = () => {
         : imageBaseDir;
       if (baseDir) {
         linkedDocHook.open(docPath, (path) =>
-          `/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(baseDir)}`
+          getApiUrl(`/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(baseDir)}`)
         );
       } else {
         linkedDocHook.open(docPath);
@@ -365,7 +491,7 @@ const App: React.FC = () => {
     if (filePaths.size === 0) return;
     // Open sidebar to the files tab so the flash is visible
     if (!sidebar.isOpen || sidebar.activeTab !== 'files') {
-      sidebar.open('files');
+      openSidebarTab('files');
     }
     // Cancel any pending clear from a previous flash
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
@@ -375,7 +501,7 @@ const App: React.FC = () => {
       setHighlightedFiles(filePaths);
       flashTimerRef.current = setTimeout(() => setHighlightedFiles(undefined), 1200);
     });
-  }, [allAnnotationCounts, sidebar, hasFileAnnotations]);
+  }, [allAnnotationCounts, openSidebarTab, sidebar, hasFileAnnotations]);
 
   // Context-aware back label for linked doc navigation
   const backLabel = annotateSource === 'folder' ? 'file list'
@@ -422,6 +548,15 @@ const App: React.FC = () => {
   // Plan diff state — memoize filtered annotation lists to avoid new references per render
   const diffAnnotations = useMemo(() => allAnnotations.filter(a => !!a.diffContext), [allAnnotations]);
   const viewerAnnotations = useMemo(() => allAnnotations.filter(a => !a.diffContext), [allAnnotations]);
+  // Any-annotations flag used by Close/Approve/Send guards. Consolidates the
+  // four-term check that was inlined across the annotate-mode header + keyboard paths.
+  const hasAnyAnnotations = useMemo(
+    () => allAnnotations.length > 0
+      || editorAnnotations.length > 0
+      || linkedDocHook.docAnnotationCount > 0
+      || globalAttachments.length > 0,
+    [allAnnotations.length, editorAnnotations.length, linkedDocHook.docAnnotationCount, globalAttachments.length],
+  );
 
   // URL-based sharing
   const {
@@ -519,12 +654,12 @@ const App: React.FC = () => {
     if (isLoadingShared) return; // Wait for share check to complete
     if (isSharedSession) return; // Already loaded from share
 
-    fetch('/api/plan')
+    fetch(getApiUrl('/api/plan'))
       .then(res => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'archive'; filePath?: string; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; isWSL?: boolean; serverConfig?: { displayName?: string; gitUser?: string } }) => {
+.then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'archive'; filePath?: string; sourceInfo?: string; gate?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; isWSL?: boolean; serverConfig?: { displayName?: string; gitUser?: string } }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
         // gitUser drives the "Use git name" button in Settings; stays undefined (button hidden) when unavailable
@@ -545,6 +680,7 @@ const App: React.FC = () => {
         setIsApiMode(true);
         if (data.mode === 'annotate' || data.mode === 'annotate-last' || data.mode === 'annotate-folder') {
           setAnnotateMode(true);
+          setGate(data.gate ?? false);
         }
         if (data.mode === 'annotate-folder') {
           sidebar.open('files');
@@ -552,8 +688,12 @@ const App: React.FC = () => {
         if (data.mode && data.mode !== 'archive') {
           setAnnotateSource(data.mode === 'annotate-last' ? 'message' : data.mode === 'annotate-folder' ? 'folder' : 'file');
         }
+        setSourceInfo(data.sourceInfo ?? undefined);
         if (data.filePath) {
           setImageBaseDir(data.mode === 'annotate-folder' ? data.filePath : data.filePath.replace(/\/[^/]+$/, ''));
+          if (data.mode === 'annotate') {
+            setSourceFilePath(data.filePath);
+          }
         }
         if (data.sharingEnabled !== undefined) {
           setSharingEnabled(data.sharingEnabled);
@@ -569,6 +709,12 @@ const App: React.FC = () => {
         }
         if (data.projectRoot) {
           setProjectRoot(data.projectRoot);
+        }
+        if (data.cwd) {
+          setCwd(data.cwd);
+        }
+        if (data.sessionId) {
+          setSessionId(data.sessionId);
         }
         // Capture plan version history data
         if (data.previousPlan !== undefined) {
@@ -591,8 +737,14 @@ const App: React.FC = () => {
         }
       })
       .catch(() => {
-        // Not in API mode - use default content
-        setIsApiMode(false);
+        // If we have a session path injected, this is a real API session that failed to load
+        if (window.__PLANNOTATOR_SESSION_PATH__) {
+          setMarkdown(`# Session Not Found\n\nThe session you're looking for is no longer active. It may have been closed or the server was restarted.\n\nSession path: \`${window.__PLANNOTATOR_SESSION_PATH__}\``);
+          setIsApiMode(true); // Prevent demo-mode UI
+        } else {
+          // Not in API mode - use default content (dev mode)
+          setIsApiMode(false);
+        }
       })
       .finally(() => setIsLoading(false));
   }, [isLoadingShared, isSharedSession]);
@@ -659,7 +811,7 @@ const App: React.FC = () => {
     if (targets.length === 0) return;
     autoSaveAttempted.current = true;
 
-    const autoSavePromise = fetch('/api/save-notes', {
+    const autoSavePromise = fetch(getApiUrl('/api/save-notes'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -727,7 +879,7 @@ const App: React.FC = () => {
         : pendingPasteImage.file;
       formData.append('file', fileToUpload);
 
-      const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      const res = await fetch(getApiUrl('/api/upload'), { method: 'POST', body: formData });
       if (res.ok) {
         const data = await res.json();
         setGlobalAttachments(prev => [...prev, { path: data.path, name }]);
@@ -817,7 +969,7 @@ const App: React.FC = () => {
         body.feedback = annotationsOutput;
       }
 
-      await fetch('/api/approve', {
+      await fetch(getApiUrl('/api/approve'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -832,7 +984,7 @@ const App: React.FC = () => {
     setIsSubmitting(true);
     try {
       const planSaveSettings = getPlanSaveSettings();
-      await fetch('/api/deny', {
+      await fetch(getApiUrl('/api/deny'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -853,7 +1005,7 @@ const App: React.FC = () => {
   const handleAnnotateFeedback = async () => {
     setIsSubmitting(true);
     try {
-      await fetch('/api/feedback', {
+      await fetch(getApiUrl('/api/feedback'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -867,11 +1019,22 @@ const App: React.FC = () => {
     }
   };
 
+  // Annotate gate-mode handler — approves the artifact without feedback (#570)
+  const handleAnnotateApprove = async () => {
+    setIsSubmitting(true);
+    try {
+      await fetch('/api/approve', { method: 'POST' });
+      setSubmitted('approved');
+    } catch {
+      setIsSubmitting(false);
+    }
+  };
+
   // Exit annotation session without sending feedback
   const handleAnnotateExit = useCallback(async () => {
     setIsExiting(true);
     try {
-      const res = await fetch('/api/exit', { method: 'POST' });
+      const res = await fetch(getApiUrl('/api/exit'), { method: 'POST' });
       if (res.ok) {
         setSubmitted('exited');
       } else {
@@ -907,8 +1070,13 @@ const App: React.FC = () => {
 
       e.preventDefault();
 
-      // Annotate mode: always send feedback (empty = "no feedback" message)
+      // Annotate mode: gate-enabled + no annotations → approve (empty stdout).
+      // Otherwise: send feedback.
       if (annotateMode) {
+        if (gate && !hasAnyAnnotations) {
+          handleAnnotateApprove();
+          return;
+        }
         handleAnnotateFeedback();
         return;
       }
@@ -940,20 +1108,23 @@ const App: React.FC = () => {
     showExport, showImport, showFeedbackPrompt, showClaudeCodeWarning, showExitWarning, showAgentWarning,
     showPermissionModeSetup, pendingPasteImage,
     submitted, isSubmitting, isExiting, isApiMode, linkedDocHook.isActive, annotations.length, externalAnnotations.length, annotateMode,
+    gate, hasAnyAnnotations,
     origin, getAgentWarning,
   ]);
 
   const handleAddAnnotation = (ann: Annotation) => {
     setAnnotations(prev => [...prev, ann]);
     setSelectedAnnotationId(ann.id);
-    setIsPanelOpen(true);
+    if (wideModeType === null) {
+      setIsPanelOpen(true);
+    }
   };
 
-  // Stable reference — the Viewer's highlighter useEffect depends on this
+  // Keep selection behavior explicit across mobile/wide-mode transitions.
   const handleSelectAnnotation = React.useCallback((id: string | null) => {
     setSelectedAnnotationId(id);
-    if (id && window.innerWidth < 768) setIsPanelOpen(true);
-  }, []);
+    if (id && isMobile && wideModeType === null) setIsPanelOpen(true);
+  }, [isMobile, wideModeType]);
 
   // Core annotation removal — highlight cleanup + state filter + selection clear
   const removeAnnotation = (id: string) => {
@@ -1118,7 +1289,7 @@ const App: React.FC = () => {
 
     const targetName = target === 'obsidian' ? 'Obsidian' : target === 'bear' ? 'Bear' : 'Octarine';
     try {
-      const res = await fetch('/api/save-notes', {
+      const res = await fetch(getApiUrl('/api/save-notes'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -1233,13 +1404,15 @@ const App: React.FC = () => {
     const widths: Record<PlanWidth, number> = { compact: 832, default: 1040, wide: 1280 };
     return widths[uiPrefs.planWidth] ?? 832;
   }, [uiPrefs.planWidth]);
+  const annotateReaderMaxWidth = canUseWideMode && wideModeType === 'wide' ? null : planMaxWidth;
 
 
   return (
     <ThemeProvider defaultTheme="dark">
+      <TooltipProvider delayDuration={900} skipDelayDuration={200} disableHoverableContent>
       <div data-print-region="root" className="h-screen flex flex-col bg-background overflow-hidden">
         {/* Minimal Header */}
-        <header className="h-12 flex items-center justify-between px-2 md:px-4 border-b border-border/50 bg-card/50 backdrop-blur-xl sticky top-0 z-[50]">
+        <header data-app-header="true" className="h-12 flex items-center justify-between px-2 md:px-4 border-b border-border/50 bg-card/50 backdrop-blur-xl sticky top-0 z-[50]">
           <div className="flex items-center gap-2 md:gap-3">
             <a
               href="https://plannotator.ai"
@@ -1296,14 +1469,22 @@ const App: React.FC = () => {
             {isApiMode && (!linkedDocHook.isActive || annotateMode) && !archive.archiveMode && (
               <>
                 {annotateMode ? (
-                  // Annotate mode: Close always visible, Send Annotations when annotations exist
+                  // Annotate mode: Close always visible, Send Annotations when annotations exist,
+                  // Approve only when gate (review) mode is enabled (#570).
                   <>
                     <ExitButton
-                      onClick={() => (allAnnotations.length > 0 || editorAnnotations.length > 0 || linkedDocHook.docAnnotationCount > 0 || globalAttachments.length > 0) ? setShowExitWarning(true) : handleAnnotateExit()}
+                      onClick={() => {
+                        if (hasAnyAnnotations) {
+                          setExitWarningAction('close');
+                          setShowExitWarning(true);
+                        } else {
+                          handleAnnotateExit();
+                        }
+                      }}
                       disabled={isSubmitting || isExiting}
                       isLoading={isExiting}
                     />
-                    {(allAnnotations.length > 0 || editorAnnotations.length > 0 || linkedDocHook.docAnnotationCount > 0 || globalAttachments.length > 0) && (
+                    {hasAnyAnnotations && (
                       <FeedbackButton
                         onClick={handleAnnotateFeedback}
                         disabled={isSubmitting || isExiting}
@@ -1334,9 +1515,21 @@ const App: React.FC = () => {
                   />
                 )}
 
-                {!annotateMode && <div className="relative group/approve">
+                {(!annotateMode || gate) && <div className="relative group/approve">
                   <ApproveButton
                     onClick={() => {
+                      // Annotate gate mode: guard against dropping annotations via the existing
+                      // showExitWarning dialog (routed via exitWarningAction='approve').
+                      if (annotateMode) {
+                        if (hasAnyAnnotations) {
+                          setExitWarningAction('approve');
+                          setShowExitWarning(true);
+                          return;
+                        }
+                        handleAnnotateApprove();
+                        return;
+                      }
+                      // Plan mode: existing Claude-Code / OpenCode guards.
                       if (origin === 'claude-code' && allAnnotations.length > 0) {
                         setShowClaudeCodeWarning(true);
                         return;
@@ -1351,11 +1544,12 @@ const App: React.FC = () => {
                       }
                       handleApprove();
                     }}
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || (annotateMode && isExiting)}
                     isLoading={isSubmitting}
-                    dimmed={(origin === 'claude-code' || origin === 'gemini-cli') && allAnnotations.length > 0}
+                    dimmed={!annotateMode && (origin === 'claude-code' || origin === 'gemini-cli') && allAnnotations.length > 0}
+                    title={annotateMode ? 'Approve — no changes requested' : undefined}
                   />
-                  {(origin === 'claude-code' || origin === 'gemini-cli') && allAnnotations.length > 0 && (
+                  {!annotateMode && (origin === 'claude-code' || origin === 'gemini-cli') && allAnnotations.length > 0 && (
                     <div className="absolute top-full right-0 mt-2 px-3 py-2 bg-popover border border-border rounded-lg shadow-xl text-xs text-foreground w-56 text-center opacity-0 invisible group-hover/approve:opacity-100 group-hover/approve:visible transition-all pointer-events-none z-50">
                       <div className="absolute bottom-full right-4 border-4 border-transparent border-b-border" />
                       <div className="absolute bottom-full right-4 mt-px border-4 border-transparent border-b-popover" />
@@ -1370,7 +1564,7 @@ const App: React.FC = () => {
 
             {/* Annotations panel toggle — top-level header button */}
             <button
-              onClick={() => setIsPanelOpen(!isPanelOpen)}
+              onClick={handleAnnotationPanelToggle}
               className={`p-1.5 rounded-md text-xs font-medium transition-all ${
                 isPanelOpen
                   ? 'bg-primary/15 text-primary'
@@ -1445,10 +1639,10 @@ const App: React.FC = () => {
           {/* Tater sprites — inside content wrapper so z-0 stacking context applies */}
           {taterMode && <TaterSpriteRunning />}
           {/* Left Sidebar: collapsed tab flags (when sidebar is closed) */}
-          {!sidebar.isOpen && (
+          {wideModeType === null && !sidebar.isOpen && (
             <SidebarTabs
               activeTab={sidebar.activeTab}
-              onToggleTab={sidebar.toggleTab}
+              onToggleTab={toggleSidebarTab}
               hasDiff={planDiff.hasPreviousVersion}
               showVersionsTab={versionInfo !== null && versionInfo.totalVersions > 1}
               showFilesTab={showFilesTab && !archive.archiveMode}
@@ -1463,8 +1657,11 @@ const App: React.FC = () => {
               <SidebarContainer
                 activeTab={sidebar.activeTab}
                 onTabChange={(tab) => {
-                  sidebar.toggleTab(tab);
+                  toggleSidebarTab(tab);
                   if (tab === 'archive' && !archive.archiveMode) archive.fetchPlans();
+                  if (tab === 'sessions') {
+                    // Handled by polling in useSessions
+                  }
                 }}
                 onClose={sidebar.close}
                 width={tocResize.width}
@@ -1500,6 +1697,10 @@ const App: React.FC = () => {
                 selectedArchiveFile={archive.selectedFile}
                 onArchiveSelect={archive.select}
                 isLoadingArchive={archive.isLoading}
+                sessions={sessions}
+                isLoadingSessions={isLoadingSessions}
+                onFetchSessions={fetchSessions}
+                currentSessionId={currentSessionId}
               />
               <ResizeHandle {...tocResize.handleProps} className="hidden lg:block" side="left" />
             </>
@@ -1508,7 +1709,7 @@ const App: React.FC = () => {
           {/* Document Area */}
           <OverlayScrollArea
             element="main"
-            className={`flex-1 min-w-0 bg-grid ${!sidebar.isOpen ? 'lg:pl-[30px]' : ''}`}
+            className={`flex-1 min-w-0 bg-grid ${!sidebar.isOpen && wideModeType === null ? 'lg:pl-[30px]' : ''}`}
             data-print-region="document"
             onViewportReady={handleViewportReady}
           >
@@ -1537,19 +1738,20 @@ const App: React.FC = () => {
                   onModeChange={handleEditorModeChange}
                   taterMode={taterMode}
                   repoInfo={repoInfo}
+                  cwd={cwd}
                   planDiffStats={planDiff.diffStats}
                   isPlanDiffActive={isPlanDiffActive}
                   hasPreviousVersion={planDiff.hasPreviousVersion}
                   onPlanDiffToggle={() => setIsPlanDiffActive(!isPlanDiffActive)}
                   archiveInfo={archive.currentInfo}
-                  maxWidth={planMaxWidth}
+                  maxWidth={annotateReaderMaxWidth}
                   remountToken={linkedDocHook.isActive ? `doc:${linkedDocHook.filepath}` : 'plan'}
                 />
               )}
 
               {/* Annotation Toolstrip (hidden during plan diff and archive mode) */}
               {!isPlanDiffActive && !archive.archiveMode && (
-                <div data-print-hide className="w-full mb-3 md:mb-4 flex items-center justify-start" style={{ maxWidth: planMaxWidth }}>
+                <div data-print-hide className="w-full mb-3 md:mb-4 flex items-center justify-start" style={annotateReaderMaxWidth == null ? undefined : { maxWidth: annotateReaderMaxWidth }}>
                   <AnnotationToolstrip
                     inputMethod={inputMethod}
                     onInputMethodChange={handleInputMethodChange}
@@ -1591,7 +1793,40 @@ const App: React.FC = () => {
                 </div>
               )}
               {/* Normal Plan View — always mounted, hidden during diff mode */}
-              <div className="w-full flex justify-center" style={{ display: (isPlanDiffActive && planDiff.diffBlocks) || (annotateSource === 'folder' && !markdown && !linkedDocHook.isActive) ? 'none' : undefined }}>
+              <div className="w-full flex justify-center relative" style={{ display: (isPlanDiffActive && planDiff.diffBlocks) || (annotateSource === 'folder' && !markdown && !linkedDocHook.isActive) ? 'none' : undefined }}>
+                {canUseWideMode && !isPlanDiffActive && !archive.archiveMode && (
+                  <div
+                    data-print-hide
+                    className="absolute -top-5 left-0 right-0 mx-auto w-full flex justify-end pointer-events-none"
+                    style={annotateReaderMaxWidth === null ? undefined : { maxWidth: annotateReaderMaxWidth ?? 832 }}
+                  >
+                    <div className={`pointer-events-auto flex items-center gap-1.5 text-[11px] tracking-wide ${taterMode ? 'mr-[60px]' : 'mr-[4px]'}`}>
+                      {(['wide', 'focus'] as const).map((type, i) => (
+                        <React.Fragment key={type}>
+                          {i > 0 && <span aria-hidden className="text-muted-foreground/30 select-none">|</span>}
+                          <Tooltip
+                            side="top"
+                            align="end"
+                            content={type === 'wide' ? 'Hide panels and expand document width' : 'Hide panels, keep document width'}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => toggleViewMode(type)}
+                              aria-pressed={wideModeType === type}
+                              className={`cursor-pointer rounded-sm transition-colors duration-150 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background active:opacity-80 ${
+                                wideModeType === type
+                                  ? 'text-foreground'
+                                  : 'text-muted-foreground/50 hover:text-muted-foreground'
+                              }`}
+                            >
+                              {type.charAt(0).toUpperCase() + type.slice(1)}
+                            </button>
+                          </Tooltip>
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <Viewer
                   key={linkedDocHook.isActive ? `doc:${linkedDocHook.filepath}` : 'plan'}
                   ref={viewerRef}
@@ -1609,18 +1844,20 @@ const App: React.FC = () => {
                   onAddGlobalAttachment={handleAddGlobalAttachment}
                   onRemoveGlobalAttachment={handleRemoveGlobalAttachment}
                   repoInfo={repoInfo}
+                  cwd={cwd}
                   stickyActions={uiPrefs.stickyActionsEnabled}
                   planDiffStats={linkedDocHook.isActive ? null : planDiff.diffStats}
                   isPlanDiffActive={isPlanDiffActive}
                   onPlanDiffToggle={() => setIsPlanDiffActive(!isPlanDiffActive)}
                   hasPreviousVersion={!linkedDocHook.isActive && planDiff.hasPreviousVersion}
                   showDemoBadge={!isApiMode && !isLoadingShared && !isSharedSession}
-                  maxWidth={planMaxWidth}
+                  maxWidth={annotateReaderMaxWidth}
                   onOpenLinkedDoc={handleOpenLinkedDoc}
                   linkedDocInfo={linkedDocHook.isActive ? { filepath: linkedDocHook.filepath!, onBack: handleLinkedDocBack, label: fileBrowser.dirs.find(d => d.path === fileBrowser.activeDirPath)?.isVault ? 'Vault File' : fileBrowser.activeFile ? 'File' : undefined, backLabel } : null}
                   imageBaseDir={imageBaseDir}
                   copyLabel={annotateSource === 'message' ? 'Copy message' : annotateSource === 'file' || annotateSource === 'folder' ? 'Copy file' : undefined}
                   archiveInfo={archive.currentInfo}
+                  sourceInfo={sourceInfo}
                   onToggleCheckbox={checkbox.toggle}
                   checkboxOverrides={checkbox.overrides}
                   actionsLabelMode={actionsLabelMode}
@@ -1630,11 +1867,11 @@ const App: React.FC = () => {
           </OverlayScrollArea>
 
           {/* Resize Handle */}
-          {isPanelOpen && <ResizeHandle {...panelResize.handleProps} className="hidden md:block" side="right" />}
+          {isPanelOpen && wideModeType === null && <ResizeHandle {...panelResize.handleProps} className="hidden md:block" side="right" />}
 
           {/* Annotation Panel */}
           <AnnotationPanel
-            isOpen={isPanelOpen}
+            isOpen={isPanelOpen && wideModeType === null}
             blocks={blocks}
             annotations={allAnnotations}
             selectedId={selectedAnnotationId}
@@ -1719,18 +1956,19 @@ const App: React.FC = () => {
           showCancel
         />
 
-        {/* Exit with annotations warning dialog */}
+        {/* Unsaved-annotations warning dialog — reused by Close and (in gate mode) Approve */}
         <ConfirmDialog
           isOpen={showExitWarning}
           onClose={() => setShowExitWarning(false)}
           onConfirm={() => {
             setShowExitWarning(false);
-            handleAnnotateExit();
+            if (exitWarningAction === 'approve') handleAnnotateApprove();
+            else handleAnnotateExit();
           }}
           title="Annotations Won't Be Sent"
-          message={<>You have {allAnnotations.length + editorAnnotations.length + linkedDocHook.docAnnotationCount + globalAttachments.length} annotation{(allAnnotations.length + editorAnnotations.length + linkedDocHook.docAnnotationCount + globalAttachments.length) !== 1 ? 's' : ''} that will be lost if you close.</>}
+          message={<>You have {allAnnotations.length + editorAnnotations.length + linkedDocHook.docAnnotationCount + globalAttachments.length} annotation{(allAnnotations.length + editorAnnotations.length + linkedDocHook.docAnnotationCount + globalAttachments.length) !== 1 ? 's' : ''} that will be lost if you {exitWarningAction === 'approve' ? 'approve' : 'close'}.</>}
           subMessage="To send your annotations, use Send Annotations instead."
-          confirmText="Close Anyway"
+          confirmText={exitWarningAction === 'approve' ? 'Approve Anyway' : 'Close Anyway'}
           cancelText="Cancel"
           variant="warning"
           showCancel
@@ -1784,8 +2022,9 @@ const App: React.FC = () => {
           title={
             archive.archiveMode ? 'Archive Closed'
             : submitted === 'exited' ? 'Session Closed'
-            : submitted === 'approved' ? 'Plan Approved'
-            : annotateMode ? 'Annotations Sent'
+            : submitted === 'approved'
+              ? (annotateMode ? 'Approved' : 'Plan Approved')
+              : annotateMode ? 'Annotations Sent'
             : 'Feedback Sent'
           }
           subtitle={
@@ -1794,7 +2033,9 @@ const App: React.FC = () => {
               : archive.archiveMode
                 ? 'You can reopen with plannotator archive.'
                 : submitted === 'approved'
-                  ? `${agentName} will proceed with the implementation.`
+                  ? (annotateMode
+                      ? `${agentName} will proceed.`
+                      : `${agentName} will proceed with the implementation.`)
                   : annotateMode
                     ? `${agentName} will address your annotations on the ${annotateSource === 'message' ? 'message' : annotateSource === 'folder' ? 'files' : 'file'}.`
                     : `${agentName} will revise the plan based on your annotations.`
@@ -1823,6 +2064,7 @@ const App: React.FC = () => {
           }}
         />
       </div>
+      </TooltipProvider>
     </ThemeProvider>
   );
 };

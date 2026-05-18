@@ -9,12 +9,13 @@ import {
 	reviewRuntime,
 	runGitDiff,
 	startAnnotateServer,
-	startPlanReviewServer,
+	startMultiSessionPlanServer,
 	startReviewServer,
 	type DiffType,
 } from "./server.js";
 import { openBrowser } from "./server/network.js";
 import { parsePRUrl, checkPRAuth, fetchPR } from "./server/pr.js";
+import { buildPiPlanSessionOptions } from "./plan-session.js";
 import {
 	getMRLabel,
 	getMRNumberLabel,
@@ -24,6 +25,7 @@ import {
 } from "./generated/pr-provider.js";
 import { parseRemoteUrl } from "./generated/repo.js";
 import { fetchRef, createWorktree, removeWorktree, ensureObjectAvailable } from "./generated/worktree.js";
+import { loadConfig, resolveDefaultDiffType } from "./generated/config.js";
 
 export type AnnotateMode = "annotate" | "annotate-folder" | "annotate-last";
 export interface PlanReviewDecision {
@@ -114,8 +116,28 @@ async function openBrowserAndWait<T>(
 	server: { url: string; stop: () => void },
 	ctx: ExtensionContext,
 	waitForResult: () => Promise<T>,
+	signal?: AbortSignal,
 ): Promise<T> {
 	openBrowserForServer(server.url, ctx);
+
+	if (signal) {
+		const abortPromise = new Promise<never>((_resolve, reject) => {
+			if (signal.aborted) {
+				reject(new DOMException("The operation was aborted.", "AbortError"));
+				return;
+			}
+			const handler = () => reject(new DOMException("The operation was aborted.", "AbortError"));
+			signal.addEventListener("abort", handler, { once: true });
+		});
+
+		try {
+			const result = await Promise.race([waitForResult(), abortPromise]);
+			await delay(1500);
+			return result;
+		} finally {
+			server.stop();
+		}
+	}
 
 	const result = await waitForResult();
 	await delay(1500);
@@ -131,13 +153,15 @@ export async function startPlanReviewBrowserSession(
 		throw new Error("Plannotator browser review is unavailable in this session.");
 	}
 
-	const server = await startPlanReviewServer({
+	const planSessionOptions = buildPiPlanSessionOptions(ctx);
+	const server = await startMultiSessionPlanServer({
 		plan: planContent,
 		htmlContent: planHtmlContent,
 		origin: "pi",
 		sharingEnabled: process.env.PLANNOTATOR_SHARE !== "disabled",
 		shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
 		pasteApiUrl: process.env.PLANNOTATOR_PASTE_URL || undefined,
+		...planSessionOptions,
 	});
 
 	openBrowserForServer(server.url, ctx);
@@ -157,14 +181,33 @@ export async function startPlanReviewBrowserSession(
 export async function openPlanReviewBrowser(
 	ctx: ExtensionContext,
 	planContent: string,
+	signal?: AbortSignal,
 ): Promise<PlanReviewDecision> {
 	const session = await startPlanReviewBrowserSession(ctx, planContent);
+
+	if (signal) {
+		const abortPromise = new Promise<never>((_resolve, reject) => {
+			if (signal.aborted) {
+				reject(new DOMException("The operation was aborted.", "AbortError"));
+				return;
+			}
+			const handler = () => reject(new DOMException("The operation was aborted.", "AbortError"));
+			signal.addEventListener("abort", handler, { once: true });
+		});
+
+		try {
+			return await Promise.race([session.waitForDecision(), abortPromise]);
+		} finally {
+			session.stop();
+		}
+	}
+
 	return session.waitForDecision();
 }
 
 export async function openCodeReview(
 	ctx: ExtensionContext,
-	options: { cwd?: string; defaultBranch?: string; diffType?: DiffType; prUrl?: string } = {},
+	options: { cwd?: string; defaultBranch?: string; diffType?: DiffType; prUrl?: string; signal?: AbortSignal } = {},
 ): Promise<{ approved: boolean; feedback?: string; annotations?: unknown[]; agentSwitch?: string; exit?: boolean }> {
 	if (!ctx.hasUI || !reviewHtmlContent) {
 		throw new Error("Plannotator code review browser is unavailable in this session.");
@@ -180,6 +223,7 @@ export async function openCodeReview(
 	let prMetadata: Awaited<ReturnType<typeof fetchPR>>["metadata"] | undefined;
 	let diffType: DiffType | undefined;
 	let agentCwd: string | undefined;
+	let initialBase: string | undefined;
 	let worktreeCleanup: (() => void | Promise<void>) | undefined;
 	let exitHandler: (() => void) | undefined;
 
@@ -336,11 +380,15 @@ export async function openCodeReview(
 		const cwd = options.cwd ?? ctx.cwd;
 		gitCtx = await getGitContext(cwd);
 		const defaultBranch = options.defaultBranch ?? gitCtx.defaultBranch;
-		diffType = options.diffType ?? "uncommitted";
+		diffType = options.diffType ?? resolveDefaultDiffType(loadConfig());
 		const result = await runGitDiff(diffType, defaultBranch, cwd);
 		rawPatch = result.patch;
 		gitRef = result.label;
 		diffError = result.error;
+		// Remember which base the initial diff was computed against so it can
+		// be forwarded to the server below. Only matters when the caller
+		// overrode the detected default; otherwise it matches gitCtx already.
+		initialBase = defaultBranch;
 	}
 
 	const server = await startReviewServer({
@@ -350,15 +398,18 @@ export async function openCodeReview(
 		origin: "pi",
 		diffType,
 		gitContext: gitCtx,
+		initialBase,
 		prMetadata,
 		agentCwd,
 		htmlContent: reviewHtmlContent,
 		sharingEnabled: process.env.PLANNOTATOR_SHARE !== "disabled",
 		shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
+		pasteApiUrl: process.env.PLANNOTATOR_PASTE_URL || undefined,
 		onCleanup: worktreeCleanup,
+		sessionId: buildPiPlanSessionOptions(ctx).sessionId,
 	});
 
-	return openBrowserAndWait(server, ctx, server.waitForDecision);
+	return openBrowserAndWait(server, ctx, server.waitForDecision, options.signal);
 }
 
 export async function openMarkdownAnnotation(
@@ -367,7 +418,10 @@ export async function openMarkdownAnnotation(
 	markdown: string,
 	mode: AnnotateMode,
 	folderPath?: string,
-): Promise<{ feedback: string; exit?: boolean }> {
+	sourceInfo?: string,
+	gate?: boolean,
+	signal?: AbortSignal,
+): Promise<{ feedback: string; exit?: boolean; approved?: boolean }> {
 	if (!ctx.hasUI || !planHtmlContent) {
 		throw new Error("Plannotator annotation browser is unavailable in this session.");
 	}
@@ -390,31 +444,37 @@ export async function openMarkdownAnnotation(
 		origin: "pi",
 		mode,
 		folderPath,
+		sourceInfo,
+		gate,
 		htmlContent: planHtmlContent,
 		sharingEnabled: process.env.PLANNOTATOR_SHARE !== "disabled",
 		shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
 		pasteApiUrl: process.env.PLANNOTATOR_PASTE_URL || undefined,
+		...buildPiPlanSessionOptions(ctx),
 	});
 
-	return openBrowserAndWait(server, ctx, server.waitForDecision);
+	return openBrowserAndWait(server, ctx, server.waitForDecision, signal);
 }
 
 export async function openLastMessageAnnotation(
 	ctx: ExtensionContext,
 	lastText: string,
-): Promise<{ feedback: string; exit?: boolean }> {
-	return openMarkdownAnnotation(ctx, "last-message", lastText, "annotate-last");
+	gate?: boolean,
+	signal?: AbortSignal,
+): Promise<{ feedback: string; exit?: boolean; approved?: boolean }> {
+	return openMarkdownAnnotation(ctx, "last-message", lastText, "annotate-last", undefined, undefined, gate, signal);
 }
 
 export async function openArchiveBrowserAction(
 	ctx: ExtensionContext,
 	customPlanPath?: string,
+	signal?: AbortSignal,
 ): Promise<{ opened: boolean }> {
 	if (!ctx.hasUI || !planHtmlContent) {
 		throw new Error("Plannotator archive browser is unavailable in this session.");
 	}
 
-	const server = await startPlanReviewServer({
+	const server = await startMultiSessionPlanServer({
 		plan: "",
 		htmlContent: planHtmlContent,
 		origin: "pi",
@@ -430,5 +490,5 @@ export async function openArchiveBrowserAction(
 			await server.waitForDone();
 		}
 		return { opened: true };
-	});
+	}, signal);
 }

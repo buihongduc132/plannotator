@@ -77,6 +77,18 @@ interface UseSharingResult {
 }
 
 
+// Share payloads are base64url-encoded deflate output: charset [A-Za-z0-9_-],
+// realistically >=30 chars, and virtually always mixed-case because deflate
+// output has high entropy. Plain heading anchors — whether the lowercase
+// ASCII slugs from `slugifyHeading` ("section-overview"), Unicode slugs
+// ("café", "中文-notes"), or raw HTML ids ("MySection") — miss at least one
+// of those signals. So: run share parsing only when the hash looks like a
+// share payload. Everything else is left for Viewer to scroll to (or ignore).
+function looksLikeSharePayload(rawHash: string): boolean {
+  const hash = rawHash.replace(/^#/, '').split('?')[0];
+  return hash.length >= 30 && /^[A-Za-z0-9_-]+$/.test(hash) && /[A-Z]/.test(hash);
+}
+
 export function useSharing(
   markdown: string,
   annotations: Annotation[],
@@ -107,18 +119,30 @@ export function useSharing(
   const clearShareLoadError = useCallback(() => setShareLoadError(''), []);
 
   // Load shared state from URL hash (or paste-service short URL)
-  const loadFromHash = useCallback(async () => {
+  // Guards existing local content — shared content is discarded if user already has a plan open
+  const loadFromHash = useCallback(async (localMarkdown: string, localAnnotations: Annotation[]) => {
+    // REQ-10: Local session takes precedence. If user already has content open,
+    // shared URL is silently ignored — they keep their local session.
+    if ((localMarkdown && localMarkdown.trim().length > 0) || localAnnotations.length > 0) {
+      setIsLoadingShared(false);
+      return false;
+    }
+
     try {
       // Check for short URL path pattern: /p/<id>
       const pathMatch = window.location.pathname.match(/^\/p\/([A-Za-z0-9]{6,16})$/);
       if (pathMatch) {
         const pasteId = pathMatch[1];
 
-        // Extract encryption key from URL fragment: #key=<base64url>
+        // Extract key and optional paste origin from fragment: #key=<k>&paste=<base64url>
         const fragment = window.location.hash.slice(1);
-        const encryptionKey = fragment.startsWith('key=') ? fragment.slice(4) : undefined;
+        const params = new URLSearchParams(fragment);
+        const encryptionKey = params.get('key') ?? undefined;
+        const pasteFromFragment = params.get('paste')
+          ? atob(params.get('paste')!.replace(/-/g, '+').replace(/_/g, '/'))
+          : undefined;
 
-        const payload = await loadFromPasteId(pasteId, pasteApiUrl, encryptionKey);
+        const payload = await loadFromPasteId(pasteId, pasteFromFragment ?? pasteApiUrl, encryptionKey);
         if (payload) {
           setMarkdown(payload.p);
 
@@ -149,6 +173,12 @@ export function useSharing(
       }
 
       const hash = window.location.hash.slice(1);
+
+      // Not a share payload — leave it for Viewer to scroll to (or ignore).
+      if (!looksLikeSharePayload(hash)) {
+        return false;
+      }
+
       const payload = await parseShareHash();
 
       if (payload) {
@@ -197,22 +227,24 @@ export function useSharing(
     }
   }, [setMarkdown, setAnnotations, setGlobalAttachments, onSharedLoad, pasteApiUrl]);
 
-  // Load from hash on mount
+  // Load from hash on mount — pass current local state so shared is skipped if local exists
   useEffect(() => {
-    loadFromHash().finally(() => setIsLoadingShared(false));
-  }, []); // Only run on mount
+    loadFromHash(markdown, annotations).finally(() => setIsLoadingShared(false));
+  }, [markdown, annotations]); // Re-run if local content changes — guard re-evaluates
 
   // Listen for hash changes (when user pastes a new share URL)
   useEffect(() => {
     const handleHashChange = () => {
-      if (window.location.hash.length > 1) {
-        loadFromHash();
+if (!looksLikeSharePayload(window.location.hash)) return;
+      loadFromHash();
+if (window.location.hash.length > 1) {
+        loadFromHash(markdown, annotations);
       }
     };
 
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, [loadFromHash]);
+  }, [loadFromHash, markdown, annotations]);
 
   // Generate share URL when markdown or annotations change
   const refreshShareUrl = useCallback(async () => {
@@ -279,11 +311,15 @@ export function useSharing(
       let payload: SharePayload | undefined;
 
       // Check for short URL pattern: /p/<id> with optional #key=<key> fragment
-      const shortMatch = url.match(/\/p\/([A-Za-z0-9]{6,16})(?:#key=([A-Za-z0-9_-]+))?(?:\?|#|$)/);
+      const shortMatch = url.match(/\/p\/([A-Za-z0-9]{6,16})(?:#(.*))?(?:\?|$)/);
       if (shortMatch) {
         const pasteId = shortMatch[1];
-        const encryptionKey = shortMatch[2]; // undefined if no key fragment
-        const loaded = await loadFromPasteId(pasteId, pasteApiUrl, encryptionKey);
+        const fragParams = new URLSearchParams(shortMatch[2] ?? '');
+        const encryptionKey = fragParams.get('key') ?? undefined;
+        const pasteFromFragment = fragParams.get('paste')
+          ? atob(fragParams.get('paste')!.replace(/-/g, '+').replace(/_/g, '/'))
+          : undefined;
+        const loaded = await loadFromPasteId(pasteId, pasteFromFragment ?? pasteApiUrl, encryptionKey);
         if (!loaded) {
           return { success: false, count: 0, planTitle: '', error: 'Failed to load from short URL — paste may have expired' };
         }
@@ -299,7 +335,7 @@ export function useSharing(
           return { success: false, count: 0, planTitle: '', error: 'Invalid share URL: empty hash' };
         }
 
-        payload = await decompress(hash);
+        payload = (await decompress(hash)) as SharePayload;
       }
 
       // Extract plan title from embedded plan text

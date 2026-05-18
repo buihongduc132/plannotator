@@ -9,9 +9,14 @@
  *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
  */
 
+import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
 import { isRemoteSession, getServerPort } from "./remote";
+import { isRemoteSession, getServerPort, getServerHost, getServerUrl } from "./remote";
+import { getSessionContext, extractSessionSlug, injectSessionPath } from "./index";
 import type { Origin } from "@plannotator/shared/agents";
-import { type DiffType, type GitContext, runVcsDiff, getVcsFileContentsForDiff, canStageFiles, stageFile, unstageFile, resolveVcsCwd, validateFilePath } from "./vcs";
+import { type DiffType, type GitContext, runVcsDiff, getVcsFileContentsForDiff, canStageFiles, stageFile, unstageFile, resolveVcsCwd, validateFilePath, getVcsContext, gitRuntime } from "./vcs";
+import { parseWorktreeDiffType, detectRemoteDefaultBranch, resolveBaseBranch } from "@plannotator/shared/review-core";
+import type { AgentJobInfo } from "@plannotator/shared/agent-jobs";
 import { getRepoInfo } from "./repo";
 import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon, type OpencodeClient } from "./shared-handlers";
 import { contentHash, deleteDraft } from "./draft";
@@ -32,10 +37,29 @@ import {
   parseClaudeStreamOutput,
   transformClaudeFindings,
 } from "./claude-review";
+import { createTourSession, TOUR_EMPTY_OUTPUT_ERROR } from "./tour/tour-review";
 import { saveConfig, detectGitUser, getServerConfig } from "./config";
 import { type PRMetadata, type PRReviewFileComment, fetchPRFileContent, fetchPRContext, submitPRReview, fetchPRViewedFiles, markPRFilesViewed, getPRUser, prRefFromMetadata, getDisplayRepo, getMRLabel, getMRNumberLabel } from "./pr";
 import { createAIEndpoints, ProviderRegistry, SessionManager, createProvider, type AIEndpoints, type PiSDKConfig } from "@plannotator/ai";
 import { isWSL } from "./browser";
+
+/**
+ * Regex to extract sessionId from URL path: /s/<sessionId>/api/...
+ */
+const SESSION_PATH_REGEX = /^\/s\/([^/]+)(\/api\/.*)$/;
+
+/**
+ * Parse a URL pathname to extract optional sessionId and the remaining API path.
+ * Returns { sessionId, apiPath } if the path matches /s/<id>/api/...,
+ * or { sessionId: null, apiPath } for flat /api/... paths.
+ */
+function parseSessionPath(pathname: string): { sessionId: string | null; apiPath: string } {
+  const match = SESSION_PATH_REGEX.exec(pathname);
+  if (match) {
+    return { sessionId: match[1], apiPath: match[2] };
+  }
+  return { sessionId: null, apiPath: pathname };
+}
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
@@ -61,6 +85,14 @@ export interface ReviewServerOptions {
   diffType?: DiffType;
   /** Git context with branch info and available diff options */
   gitContext?: GitContext;
+  /**
+   * Initial base branch the caller used to compute `rawPatch`. When a caller
+   * overrides the detected default (e.g. Pi's `openCodeReview` accepting a
+   * custom `defaultBranch`), this must be forwarded so the server's internal
+   * `currentBase` state, the `/api/diff` response, and downstream agent
+   * prompts stay consistent with the patch that's already on screen.
+   */
+  initialBase?: string;
   /** Whether URL sharing is enabled (default: true) */
   sharingEnabled?: boolean;
   /** Custom base URL for share links (default: https://share.plannotator.ai) */
@@ -75,6 +107,8 @@ export interface ReviewServerOptions {
   agentCwd?: string;
   /** Cleanup callback invoked when server stops (e.g., remove temp worktree) */
   onCleanup?: () => void | Promise<void>;
+  /** Session ID for multi-session routing (REQ-06) */
+  sessionId?: string;
 }
 
 export interface ReviewServerResult {
@@ -84,6 +118,8 @@ export interface ReviewServerResult {
   url: string;
   /** Whether running in remote mode */
   isRemote: boolean;
+  /** The session ID for this server instance */
+  sessionId: string;
   /** Wait for user review decision */
   waitForDecision: () => Promise<{
     approved: boolean;
@@ -113,6 +149,7 @@ export async function startReviewServer(
   options: ReviewServerOptions
 ): Promise<ReviewServerResult> {
   const { htmlContent, origin, gitContext, sharingEnabled = true, shareBaseUrl, onReady, prMetadata } = options;
+  const sessionId = options.sessionId ?? crypto.randomUUID();
 
   const isPRMode = !!prMetadata;
   const hasLocalAccess = !!gitContext;
@@ -120,50 +157,98 @@ export async function startReviewServer(
   const editorAnnotations = createEditorAnnotationHandler();
   const externalAnnotations = createExternalAnnotationHandler("review");
 
+  const tour = createTourSession();
+
   // Mutable state for diff switching
   let currentPatch = options.rawPatch;
   let currentGitRef = options.gitRef;
   let currentDiffType: DiffType = options.diffType || "uncommitted";
   let currentError = options.error;
+  // Tracks the base branch the user picked from the UI. Agent review prompts
+  // read this (not gitContext.defaultBranch) so they analyze the same diff
+  // the reviewer is currently looking at. Honors an explicit initialBase from
+  // the caller — e.g. programmatic Pi callers can request a non-detected base.
+  let currentBase = options.initialBase || gitContext?.defaultBranch || "main";
+  let baseEverSwitched = false;
+
+  // Fire-and-forget: query the remote for its actual default branch. If it
+  // arrives before the user interacts, quietly upgrade currentBase from the
+  // local fallback (e.g. "main") to the upstream ref (e.g. "origin/main").
+  // Non-blocking — the server is already listening by the time this resolves.
+  if (gitContext && !options.initialBase && !isPRMode) {
+    detectRemoteDefaultBranch(gitRuntime, gitContext.cwd).then((remote) => {
+      if (remote && !baseEverSwitched) currentBase = remote;
+    }).catch(() => {
+      // Branch detection failed — keep current base fallback
+    });
+  }
 
   // Agent jobs — background process manager (late-binds serverUrl via getter)
   let serverUrl = "";
+const resolveAgentCwd = (): string =>
+    options.agentCwd ?? resolveVcsCwd(currentDiffType, gitContext?.cwd) ?? process.cwd();
   const agentJobs = createAgentJobHandler({
     mode: "review",
     getServerUrl: () => serverUrl,
-    getCwd: () => {
-      if (options.agentCwd) return options.agentCwd;
-      return resolveVcsCwd(currentDiffType, gitContext?.cwd) ?? process.cwd();
-    },
+    getCwd,
 
-    async buildCommand(provider) {
-      const cwd = options.agentCwd ?? resolveVcsCwd(currentDiffType, gitContext?.cwd) ?? process.cwd();
+    async buildCommand(provider, config) {
+      const cwd = resolveAgentCwd();
       const hasAgentLocalAccess = !!options.agentCwd || !!gitContext;
-      const userMessage = buildCodexReviewUserMessage(
-        currentPatch,
-        currentDiffType,
-        { defaultBranch: gitContext?.defaultBranch, hasLocalAccess: hasAgentLocalAccess },
-        prMetadata,
-      );
+      const userMessageOptions = { defaultBranch: currentBase, hasLocalAccess: hasAgentLocalAccess };
+
+      // Snapshot the diff context at launch — stored on the job so
+      // downstream "Copy All" produces the same markdown as /api/feedback
+      // would right now, even if the reviewer switches modes/bases later.
+      // Skipped in PR mode (prMetadata carries equivalent context).
+      const worktreeParts = currentDiffType.startsWith("worktree:")
+        ? parseWorktreeDiffType(currentDiffType)
+        : null;
+      const diffContext: AgentJobInfo["diffContext"] | undefined = prMetadata
+        ? undefined
+        : {
+            mode: (worktreeParts?.subType ?? currentDiffType) as string,
+            base: currentBase,
+            worktreePath: worktreeParts?.path ?? null,
+          };
+
+      if (provider === "tour") {
+        const built = await tour.buildCommand({
+          cwd,
+          patch: currentPatch,
+          diffType: currentDiffType,
+          options: userMessageOptions,
+          prMetadata,
+          config,
+        });
+        return built ? { ...built, diffContext } : built;
+      }
+
+      const userMessage = buildCodexReviewUserMessage(currentPatch, currentDiffType, userMessageOptions, prMetadata);
 
       if (provider === "codex") {
+        const model = typeof config?.model === "string" && config.model ? config.model : undefined;
+        const reasoningEffort = typeof config?.reasoningEffort === "string" && config.reasoningEffort ? config.reasoningEffort : undefined;
+        const fastMode = config?.fastMode === true;
         const outputPath = generateOutputPath();
         const prompt = CODEX_REVIEW_SYSTEM_PROMPT + "\n\n---\n\n" + userMessage;
-        const command = await buildCodexCommand({ cwd, outputPath, prompt });
-        return { command, outputPath, prompt, label: "Codex Review" };
+        const command = await buildCodexCommand({ cwd, outputPath, prompt, model, reasoningEffort, fastMode });
+        return { command, outputPath, prompt, label: "Code Review", model, reasoningEffort, fastMode: fastMode || undefined, diffContext };
       }
 
       if (provider === "claude") {
+        const model = typeof config?.model === "string" && config.model ? config.model : undefined;
+        const effort = typeof config?.effort === "string" && config.effort ? config.effort : undefined;
         const prompt = CLAUDE_REVIEW_PROMPT + "\n\n---\n\n" + userMessage;
-        const { command, stdinPrompt } = buildClaudeCommand(prompt);
-        return { command, stdinPrompt, prompt, cwd, label: "Claude Code Review", captureStdout: true };
+        const { command, stdinPrompt } = buildClaudeCommand(prompt, model, effort);
+        return { command, stdinPrompt, prompt, cwd, label: "Code Review", captureStdout: true, model, effort, diffContext };
       }
 
       return null;
     },
 
     async onJobComplete(job, meta) {
-      const cwd = options.agentCwd ?? resolveVcsCwd(currentDiffType, gitContext?.cwd) ?? process.cwd();
+      const cwd = resolveAgentCwd();
 
       // --- Codex path ---
       if (job.provider === "codex" && meta.outputPath) {
@@ -206,6 +291,21 @@ export async function startReviewServer(
           const annotations = transformClaudeFindings(output.findings, job.source, cwd);
           const result = externalAnnotations.addAnnotations({ annotations });
           if ("error" in result) console.error(`[claude-review] addAnnotations error:`, result.error);
+        }
+        return;
+      }
+
+      // --- Tour path ---
+      if (job.provider === "tour") {
+        const { summary } = await tour.onJobComplete({ job, meta });
+        if (summary) {
+          job.summary = summary;
+        } else {
+          // The process exited 0 but the model returned empty or malformed output
+          // and nothing was stored. Flip status so the client doesn't auto-open
+          // a successful-looking card that 404s on /api/tour/:id.
+          job.status = "failed";
+          job.error = TOUR_EMPTY_OUTPUT_ERROR;
         }
         return;
       }
@@ -342,29 +442,93 @@ export async function startReviewServer(
     resolveDecision = resolve;
   });
 
+  // Capture configured port so retries can fall back to dynamic allocation
+  const configuredPortValue = configuredPort;
+
   // Start server with retry logic
   let server: ReturnType<typeof Bun.serve> | null = null;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    // After the first EADDRINUSE, fall back to a dynamic port so multiple servers
+    // can coexist (PLANNOTATOR_PORT defines the *preferred* port, not a hard requirement)
+    const port = attempt === 1 ? configuredPortValue : 0;
+
     try {
       server = Bun.serve({
+hostname: getServerHostname(),
         port: configuredPort,
+port,
+port,
+        hostname: getServerHost(),
 
         async fetch(req, server) {
           const url = new URL(req.url);
 
+
+// REQ-06: Support /s/<sessionId>/api/... routing
+          const parsed = parseSessionPath(url.pathname);
+          const { sessionId: parsedSessionId, apiPath } = parsed;
+
+          // When sessionId is in the URL path, verify it exists in the registry
+          if (parsedSessionId) {
+            const ctx = getSessionContext(parsedSessionId);
+            if (!ctx) {
+              return Response.json(
+                { error: "Session not found", sessionId: parsedSessionId },
+                { status: 404 },
+              );
+            }
+          }
+
+          // REQ-06: Guard against session mismatch when server has a fixed sessionId
+          if (sessionId && parsedSessionId && parsedSessionId !== sessionId) {
+            return Response.json(
+              {
+                error: "Session mismatch",
+                message: `URL session "${parsedSessionId}" does not match expected "${sessionId}"`,
+              },
+              { status: 403 },
+            );
+          }
+
+// API: Get tour result
+          if (url.pathname.match(/^\/api\/tour\/[^/]+$/) && req.method === "GET") {
+            const jobId = url.pathname.slice("/api/tour/".length);
+            const result = tour.getTour(jobId);
+            if (!result) return Response.json({ error: "Tour not found" }, { status: 404 });
+            return Response.json(result);
+          }
+
+          // API: Save tour checklist state
+          const checklistMatch = url.pathname.match(/^\/api\/tour\/([^/]+)\/checklist$/);
+          if (checklistMatch && req.method === "PUT") {
+            const jobId = checklistMatch[1];
+            try {
+              const body = await req.json() as { checked: boolean[] };
+              if (Array.isArray(body.checked)) tour.saveChecklist(jobId, body.checked);
+              return Response.json({ ok: true });
+            } catch {
+              return Response.json({ error: "Invalid JSON" }, { status: 400 });
+            }
+          }
           // API: Get diff content
-          if (url.pathname === "/api/diff" && req.method === "GET") {
+          if (apiPath === "/api/diff" && req.method === "GET") {
             return Response.json({
               rawPatch: currentPatch,
               gitRef: currentGitRef,
               origin,
               diffType: hasLocalAccess ? currentDiffType : undefined,
+              // Echo the active base so a page refresh or reconnect rehydrates
+              // the picker to what the server is actually using — not the
+              // detected default.
+              base: hasLocalAccess ? currentBase : undefined,
               gitContext: hasLocalAccess ? gitContext : undefined,
               sharingEnabled,
               shareBaseUrl,
               repoInfo,
               isWSL: wslFlag,
+              cwd: getCwd(),
+              sessionId,
               ...(options.agentCwd && { agentCwd: options.agentCwd }),
               ...(isPRMode && { prMetadata, platformUser }),
               ...(isPRMode && initialViewedFiles.length > 0 && { viewedFiles: initialViewedFiles }),
@@ -373,8 +537,27 @@ export async function startReviewServer(
             });
           }
 
+          // API: List all active sessions (GET)
+          if (apiPath === "/api/sessions" && req.method === "GET") {
+            const sessions = [{
+              sessionId: sessionId ?? "review",
+              mode: "review",
+              origin: origin ?? "claude-code",
+              project: repoInfo?.display ?? "Unknown",
+              slug: currentGitRef,
+              name: repoInfo ? `${repoInfo.display} (${currentGitRef})` : "Code Review",
+              cwd: getCwd(),
+              url: serverUrl,
+            }];
+            return Response.json({
+              sessions,
+              count: 1,
+              maxSessions: 1,
+            });
+          }
+
           // API: Switch diff type (requires local file access)
-          if (url.pathname === "/api/diff/switch" && req.method === "POST") {
+          if (apiPath === "/api/diff/switch" && req.method === "POST") {
             if (!hasLocalAccess) {
               return Response.json(
                 { error: "Not available without local file access" },
@@ -382,7 +565,7 @@ export async function startReviewServer(
               );
             }
             try {
-              const body = (await req.json()) as { diffType: DiffType };
+              const body = (await req.json()) as { diffType: DiffType; base?: string };
               let newDiffType = body.diffType;
 
               if (!newDiffType) {
@@ -392,22 +575,50 @@ export async function startReviewServer(
                 );
               }
 
-              const defaultBranch = gitContext?.defaultBranch || "main";
+              const detectedBase = gitContext?.defaultBranch || "main";
+              // Guard against non-string payloads — resolveBaseBranch calls
+              // string methods and would throw a TypeError otherwise. Mirrors
+              // Pi's guard so both runtimes validate identically.
+              const requestedBase = typeof body.base === "string" ? body.base : undefined;
+              const base = resolveBaseBranch(requestedBase, detectedBase);
               const defaultCwd = gitContext?.cwd;
 
               // Run the new diff
-              const result = await runVcsDiff(newDiffType, defaultBranch, defaultCwd);
+              const result = await runVcsDiff(newDiffType, base, defaultCwd);
 
               // Update state
               currentPatch = result.patch;
               currentGitRef = result.label;
               currentDiffType = newDiffType;
+              currentBase = base;
+              baseEverSwitched = true;
               currentError = result.error;
+
+              // Recompute gitContext for the effective cwd so the client's
+              // sidebar (current branch, default branch, diff-mode options)
+              // reflects the worktree we're now reviewing — not the main
+              // repo's startup state. Best-effort: on failure the client
+              // keeps its existing context.
+              let updatedContext: GitContext | undefined;
+              if (gitContext) {
+                try {
+                  const effectiveCwd = resolveVcsCwd(newDiffType, gitContext.cwd);
+                  updatedContext = await getVcsContext(effectiveCwd);
+                } catch {
+                  /* best-effort */
+                }
+              }
 
               return Response.json({
                 rawPatch: currentPatch,
                 gitRef: currentGitRef,
                 diffType: currentDiffType,
+                // Echo the base the server actually used. resolveBaseBranch
+                // trusts the caller verbatim; this echo lets the client
+                // confirm the request landed (and pick it up when the client
+                // didn't supply one and we fell back to detected default).
+                base: currentBase,
+                ...(updatedContext && { gitContext: updatedContext }),
                 ...(currentError && { error: currentError }),
               });
             } catch (err) {
@@ -418,7 +629,7 @@ export async function startReviewServer(
           }
 
           // API: Fetch PR context (comments, checks, merge status) — PR mode only
-          if (url.pathname === "/api/pr-context" && req.method === "GET") {
+          if (apiPath === "/api/pr-context" && req.method === "GET") {
             if (!isPRMode) {
               return Response.json(
                 { error: "Not in PR mode" },
@@ -436,7 +647,7 @@ export async function startReviewServer(
           }
 
           // API: Get file content for expandable diff context
-          if (url.pathname === "/api/file-content" && req.method === "GET") {
+          if (apiPath === "/api/file-content" && req.method === "GET") {
             const filePath = url.searchParams.get("path");
             if (!filePath) {
               return Response.json({ error: "Missing path" }, { status: 400 });
@@ -453,11 +664,15 @@ export async function startReviewServer(
 
             // Local review: read file contents from local git
             if (hasLocalAccess) {
-              const defaultBranch = gitContext?.defaultBranch || "main";
+              const detectedBase = gitContext?.defaultBranch || "main";
+              const base = resolveBaseBranch(
+                url.searchParams.get("base") ?? undefined,
+                detectedBase,
+              );
               const defaultCwd = gitContext?.cwd;
               const result = await getVcsFileContentsForDiff(
                 currentDiffType,
-                defaultBranch,
+                base,
                 filePath,
                 oldPath,
                 defaultCwd,
@@ -481,7 +696,7 @@ export async function startReviewServer(
           }
 
           // API: Stage / unstage a file (disabled when VCS doesn't support it)
-          if (url.pathname === "/api/git-add" && req.method === "POST") {
+          if (apiPath === "/api/git-add" && req.method === "POST") {
             if (isPRMode || !canStageFiles(currentDiffType)) {
               return Response.json(
                 { error: "Staging not available" },
@@ -510,7 +725,7 @@ export async function startReviewServer(
           }
 
           // API: Update user config (write-back to ~/.plannotator/config.json)
-          if (url.pathname === "/api/config" && req.method === "POST") {
+          if (apiPath === "/api/config" && req.method === "POST") {
             try {
               const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
               const toSave: Record<string, unknown> = {};
@@ -526,25 +741,26 @@ export async function startReviewServer(
           }
 
           // API: Serve images (local paths or temp uploads)
-          if (url.pathname === "/api/image") {
+          if (apiPath === "/api/image") {
             return handleImage(req);
           }
 
           // API: Upload image -> save to temp -> return path
-          if (url.pathname === "/api/upload" && req.method === "POST") {
+          if (apiPath === "/api/upload" && req.method === "POST") {
             return handleUpload(req);
           }
 
           // API: Get available agents (OpenCode only)
-          if (url.pathname === "/api/agents") {
+          if (apiPath === "/api/agents") {
             return handleAgents(options.opencodeClient);
           }
 
           // API: Annotation draft persistence
-          if (url.pathname === "/api/draft") {
-            if (req.method === "POST") return handleDraftSave(req, draftKey);
-            if (req.method === "DELETE") return handleDraftDelete(draftKey);
-            return handleDraftLoad(draftKey);
+          if (apiPath === "/api/draft") {
+            const draftScope = sessionId ? { sessionId, cwd: getCwd() } : undefined;
+            if (req.method === "POST") return handleDraftSave(req, draftKey, draftScope);
+            if (req.method === "DELETE") return handleDraftDelete(draftKey, draftScope);
+            return handleDraftLoad(draftKey, draftScope);
           }
 
           // API: Editor annotations (VS Code extension)
@@ -564,14 +780,14 @@ export async function startReviewServer(
           if (agentResponse) return agentResponse;
 
           // API: Exit review session without feedback
-          if (url.pathname === "/api/exit" && req.method === "POST") {
+          if (apiPath === "/api/exit" && req.method === "POST") {
             deleteDraft(draftKey);
             resolveDecision({ approved: false, feedback: "", annotations: [], exit: true });
             return Response.json({ ok: true });
           }
 
           // API: Submit review feedback
-          if (url.pathname === "/api/feedback" && req.method === "POST") {
+          if (apiPath === "/api/feedback" && req.method === "POST") {
             try {
               const body = (await req.json()) as {
                 approved?: boolean;
@@ -597,7 +813,7 @@ export async function startReviewServer(
           }
 
           // API: Submit PR review directly to GitHub (PR mode only)
-          if (url.pathname === "/api/pr-action" && req.method === "POST") {
+          if (apiPath === "/api/pr-action" && req.method === "POST") {
             if (!isPRMode || !prMetadata) {
               return Response.json({ error: "Not in PR mode" }, { status: 400 });
             }
@@ -629,7 +845,7 @@ export async function startReviewServer(
           }
 
           // API: Mark/unmark PR files as viewed on GitHub (PR mode, GitHub only)
-          if (url.pathname === "/api/pr-viewed" && req.method === "POST") {
+          if (apiPath === "/api/pr-viewed" && req.method === "POST") {
             if (!isPRMode || !prMetadata) {
               return Response.json({ error: "Not in PR mode" }, { status: 400 });
             }
@@ -656,16 +872,27 @@ export async function startReviewServer(
           }
 
           // AI endpoints
-          if (aiEndpoints && url.pathname.startsWith("/api/ai/")) {
-            const handler = aiEndpoints[url.pathname as keyof AIEndpoints];
+          if (aiEndpoints && apiPath.startsWith("/api/ai/")) {
+            const handler = aiEndpoints[apiPath as keyof AIEndpoints];
             if (handler) return handler(req);
             return Response.json({ error: "Not found" }, { status: 404 });
           }
 
           // Favicon
-          if (url.pathname === "/favicon.svg") return handleFavicon();
+          if (apiPath === "/favicon.svg") return handleFavicon();
+
+          // API routes that fell through should 404
+          if (apiPath.startsWith("/api/")) {
+            return Response.json({ error: "Not found", path: apiPath }, { status: 404 });
+          }
 
           // Serve embedded HTML for all other routes (SPA)
+          const slug = extractSessionSlug(url.pathname);
+          if (slug) {
+            return new Response(injectSessionPath(htmlContent, slug), {
+              headers: { "Content-Type": "text/html" },
+            });
+          }
           return new Response(htmlContent, {
             headers: { "Content-Type": "text/html" },
           });
@@ -682,19 +909,21 @@ export async function startReviewServer(
 
       break; // Success, exit retry loop
     } catch (err: unknown) {
-      const isAddressInUse =
-        err instanceof Error && err.message.includes("EADDRINUSE");
+      // Bun surfaces EADDRINUSE as "Failed to start server. Is port X in use?" — match
+      // that message text since err.code may be undefined in bundled builds.
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const errCode = (err as { code?: unknown }).code;
+      const hasEADDRINUSE =
+        errMsg.toLowerCase().includes("in use") ||
+        errCode === "EADDRINUSE";
 
-      if (isAddressInUse && attempt < MAX_RETRIES) {
+      if (hasEADDRINUSE && attempt < MAX_RETRIES) {
         await Bun.sleep(RETRY_DELAY_MS);
         continue;
       }
 
-      if (isAddressInUse) {
-        const hint = isRemote ? " (set PLANNOTATOR_PORT to use different port)" : "";
-        throw new Error(`Port ${configuredPort} in use after ${MAX_RETRIES} retries${hint}`);
-      }
-
+      // Retry exhausted with EADDRINUSE (should not normally happen since we fall back
+      // to port 0 on retry), or a completely unrelated error — propagate it.
       throw err;
     }
   }
@@ -704,7 +933,7 @@ export async function startReviewServer(
   }
 
   const port = server.port!;
-  serverUrl = `http://localhost:${port}`;
+  serverUrl = getServerUrl(port);
   const exitHandler = () => agentJobs.killAll();
   process.once("exit", exitHandler);
 
@@ -717,6 +946,7 @@ export async function startReviewServer(
     port,
     url: serverUrl,
     isRemote,
+    sessionId: sessionId ?? "review",
     waitForDecision: () => decisionPromise,
     stop: () => {
       process.removeListener("exit", exitHandler);

@@ -38,6 +38,11 @@ apps/pi-extension/review-core.ts
 .idea
 .DS_Store
 *.suo
+
+# Claude Code session-local runtime state (lock files, scheduled-task state).
+# Machine-specific; never belongs in the repo.
+.claude/
+.serena/
 *.ntvs*
 *.njsproj
 *.sln
@@ -46,3 +51,48 @@ opencode.json
 plannotator-local
 # Local research/reference docs (not for repo)
 /reference/
+
+# Matrix data — local requirements tracking (do not commit)
+/.matrix-data/
+
+# Added by maintenance script
+node_modules/
+venv/
+.venv/
+.abw/
+bin/
+logs/
+__pycache__/
+target/
+.pytest_cache/
+dist/
+build/
+
+# Secrets & credentials — NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.secret
+*.token
+auth.json
+credentials.json
+secrets/
+.abw/
+
+# Local tool state
+.acpx-ralph/
+.gitnexus/
+.gitnexusignore
+.pi-lens/
+.ralph/
+entities.json
+mempalace.yaml
+home/
+_GOAL_multiple-session.md
+_empty.md
+.fusion
+.pi

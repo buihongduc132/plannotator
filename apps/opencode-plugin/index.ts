@@ -40,7 +40,10 @@ if (_proto?.constructor && _proto.constructor !== Response && _proto.constructor
 import {
   startPlannotatorServer,
   handleServerReady,
+  isClientMode,
+  getServerUrl,
 } from "@plannotator/server";
+import { openBrowser } from "@plannotator/server/browser";
 import {
   startReviewServer,
   handleReviewServerReady,
@@ -58,9 +61,19 @@ import {
 } from "./commands";
 import { planDenyFeedback } from "@plannotator/shared/feedback-templates";
 import {
-  normalizeEditPermission,
   stripConflictingPlanModeRules,
 } from "./plan-mode";
+import {
+  applyWorkflowConfig,
+  isPlanningAgent,
+  normalizeWorkflowOptions,
+  shouldApplyToolDefinitionRewrites,
+  shouldInjectFullPlanningPrompt,
+  shouldInjectGenericPlanReminder,
+  shouldRegisterSubmitPlan,
+  shouldRejectSubmitPlanForAgent,
+  type PlannotatorOpenCodeOptions,
+} from "./workflow";
 
 // Lazy-load HTML at first use instead of embedding in the bundle.
 // The two SPA files are ~20 MB combined — inlining them as string literals
@@ -68,13 +81,32 @@ import {
 let _planHtml: string | null = null;
 let _reviewHtml: string | null = null;
 
+function resolveBundledHtmlPath(filename: string): string {
+  const candidates = [
+    path.join(import.meta.dir, filename),
+    path.join(import.meta.dir, "..", filename),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`Could not find bundled HTML asset: ${filename}`);
+}
+
+function readBundledHtml(filename: string): string {
+  return readFileSync(resolveBundledHtmlPath(filename), "utf-8");
+}
+
 function getPlanHtml(): string {
-  if (!_planHtml) _planHtml = readFileSync(path.join(import.meta.dir, "..", "plannotator.html"), "utf-8");
+  if (!_planHtml) _planHtml = readBundledHtml("plannotator.html");
   return _planHtml;
 }
 
 function getReviewHtml(): string {
-  if (!_reviewHtml) _reviewHtml = readFileSync(path.join(import.meta.dir, "..", "review-editor.html"), "utf-8");
+  if (!_reviewHtml) _reviewHtml = readBundledHtml("review-editor.html");
   return _reviewHtml;
 }
 
@@ -151,10 +183,23 @@ Only write and submit a plan once you have sufficient context.
 
 // ── Plugin ────────────────────────────────────────────────────────────────
 
-export const PlannotatorPlugin: Plugin = async (ctx) => {
+function getLastUserAgentFromMessages(messages: any[] | undefined): string | undefined {
+  if (!messages) return undefined;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.info?.role === "user" && typeof msg.info.agent === "string") {
+      return msg.info.agent;
+    }
+  }
+  return undefined;
+}
+
+export const PlannotatorPlugin: Plugin = async (ctx, rawOptions?: PlannotatorOpenCodeOptions) => {
+  const workflowOptions = normalizeWorkflowOptions(rawOptions);
+
   // Preload HTML in background — populates the sync cache before first use
-  Bun.file(path.join(import.meta.dir, "..", "plannotator.html")).text().then(h => { _planHtml = h; });
-  Bun.file(path.join(import.meta.dir, "..", "review-editor.html")).text().then(h => { _reviewHtml = h; });
+  Bun.file(resolveBundledHtmlPath("plannotator.html")).text().then(h => { _planHtml = h; }).catch(() => {});
+  Bun.file(resolveBundledHtmlPath("review-editor.html")).text().then(h => { _reviewHtml = h; }).catch(() => {});
 
   let cachedAgents: any[] | null = null;
 
@@ -174,6 +219,10 @@ export const PlannotatorPlugin: Plugin = async (ctx) => {
 
   function getShareBaseUrl(): string | undefined {
     return process.env.PLANNOTATOR_SHARE_URL || undefined;
+  }
+
+  function getPasteApiUrl(): string | undefined {
+    return process.env.PLANNOTATOR_PASTE_URL || undefined;
   }
 
   function getPlanTimeoutSeconds(): number | null {
@@ -197,36 +246,25 @@ export const PlannotatorPlugin: Plugin = async (ctx) => {
     return val === "1" || val === "true";
   }
 
-  return {
-    // Register submit_plan as primary-only tool (hidden from sub-agents by default)
+  const plugin: any = {
     config: async (opencodeConfig) => {
-      if (!allowSubagents()) {
-        const existingPrimaryTools = opencodeConfig.experimental?.primary_tools ?? [];
-        if (!existingPrimaryTools.includes("submit_plan")) {
-          opencodeConfig.experimental = {
-            ...opencodeConfig.experimental,
-            primary_tools: [...existingPrimaryTools, "submit_plan"],
-          };
-        }
-      }
-
-      // Allow the plan agent to write .md files anywhere.
-      // OpenCode's built-in plan agent uses relative-path globs that break
-      // when worktree != cwd (non-git projects). Per-agent config merges
-      // last, so this only affects the plan agent.
-      opencodeConfig.agent ??= {};
-      opencodeConfig.agent.plan ??= {};
-      opencodeConfig.agent.plan.permission ??= {};
-      opencodeConfig.agent.plan.permission.edit = {
-        ...normalizeEditPermission(opencodeConfig.agent.plan.permission.edit),
-        "*.md": "allow",
-      };
+      applyWorkflowConfig(opencodeConfig, workflowOptions, allowSubagents());
     },
 
     // Replace OpenCode's "STRICTLY FORBIDDEN" plan mode prompt with a version
     // that allows markdown file writing. OpenCode's original blocks ALL file edits,
     // but we need the agent to write plans, specs, docs, etc.
     "experimental.chat.messages.transform": async (input, output) => {
+      if (workflowOptions.workflow === "manual") return;
+
+      const lastUserAgent = getLastUserAgentFromMessages(output.messages);
+      if (
+        workflowOptions.workflow === "plan-agent"
+        && !isPlanningAgent(lastUserAgent, workflowOptions)
+      ) {
+        return;
+      }
+
       for (const message of output.messages) {
         if (message.info.role !== "user") continue;
         for (const part of message.parts as any[]) {
@@ -257,6 +295,8 @@ tools (except writing markdown files), or otherwise make changes to the system.
     // Suppress plan_exit — redirect to submit_plan
     // Override todowrite — defer to submit_plan during planning
     "tool.definition": async (input, output) => {
+      if (!shouldApplyToolDefinitionRewrites(workflowOptions)) return;
+
       if (input.toolID === "plan_exit") {
         output.description =
           "Do not call this tool. Use submit_plan instead — it opens a visual review UI for plan approval.";
@@ -269,12 +309,15 @@ tools (except writing markdown files), or otherwise make changes to the system.
 
     // Inject planning instructions into system prompt
     "experimental.chat.system.transform": async (input, output) => {
+      if (workflowOptions.workflow === "manual") return;
+
       const systemText = output.system.join("\n");
       if (systemText.toLowerCase().includes("title generator") || systemText.toLowerCase().includes("generate a title")) {
         return;
       }
 
       let lastUserAgent: string | undefined;
+      let isSubagent = false;
       try {
         const messagesResponse = await ctx.client.session.messages({
           // @ts-ignore - sessionID exists on input
@@ -282,21 +325,9 @@ tools (except writing markdown files), or otherwise make changes to the system.
         });
         const messages = messagesResponse.data;
 
-        if (messages) {
-          for (let i = messages.length - 1; i >= 0; i--) {
-            const msg = messages[i];
-            if (msg.info.role === "user") {
-              // @ts-ignore - UserMessage has agent field
-              lastUserAgent = msg.info.agent;
-              break;
-            }
-          }
-        }
+        lastUserAgent = getLastUserAgentFromMessages(messages);
 
         if (!lastUserAgent) return;
-
-        // Build agent doesn't need planning instructions
-        if (lastUserAgent === "build") return;
 
         // Cache agents list (static per session)
         if (!cachedAgents) {
@@ -307,22 +338,21 @@ tools (except writing markdown files), or otherwise make changes to the system.
         }
         const agent = cachedAgents.find((a: { name: string }) => a.name === lastUserAgent);
 
-        // Skip sub-agents
         // @ts-ignore - Agent has mode field
-        if (agent?.mode === "subagent") return;
+        isSubagent = agent?.mode === "subagent";
 
       } catch {
         return;
       }
 
-      // Plan agent: strip conflicting OpenCode rules, inject full prompt
-      if (lastUserAgent === "plan") {
+      if (shouldInjectFullPlanningPrompt(lastUserAgent, workflowOptions)) {
         output.system = stripConflictingPlanModeRules(output.system);
         output.system.push(getPlanningPrompt());
         return;
       }
 
-      // Other primary agents: minimal reminder about the tool
+      if (!shouldInjectGenericPlanReminder(lastUserAgent, isSubagent, workflowOptions)) return;
+
       output.system.push(`## Plan Submission
 
 When you have completed your plan, call the \`submit_plan\` tool to submit it for user review. Pass your plan as markdown text, or pass an absolute file path to a .md file.
@@ -344,11 +374,14 @@ Do NOT proceed with implementation until your plan is approved.`);
         reviewHtmlContent: getReviewHtml(),
         getSharingEnabled,
         getShareBaseUrl,
+        getPasteApiUrl,
         directory: ctx.directory,
       };
 
       const feedback = await handleAnnotateLastCommand(
-        { properties: { sessionID: input.sessionID } },
+        // input.arguments is the raw tail string from OpenCode's command dispatcher —
+        // needed so --gate / --json reach handleAnnotateLastCommand's parseAnnotateArgs (#570).
+        { properties: { sessionID: input.sessionID, arguments: input.arguments } },
         deps
       );
 
@@ -386,6 +419,7 @@ Do NOT proceed with implementation until your plan is approved.`);
         reviewHtmlContent: getReviewHtml(),
         getSharingEnabled,
         getShareBaseUrl,
+        getPasteApiUrl,
         directory: ctx.directory,
       };
 
@@ -396,27 +430,80 @@ Do NOT proceed with implementation until your plan is approved.`);
       if (commandName === "plannotator-archive")
         return handleArchiveCommand(event, deps);
     },
+  };
 
-    tool: {
+  if (shouldRegisterSubmitPlan(workflowOptions)) {
+    plugin.tool = {
       submit_plan: tool({
         description:
-          "Planning tool used to submit a plan to the user for review. Before calling this tool you must conduct interactive and exploratory analysis in order to submit a quality plan. Ask questions. Explore the codebase for context if needed. Only call submit_plan once you have enough details to create a quality plan. Work with the user to get those details. Pass either markdown text or an absolute path to a .md file.",
+          "Planning tool used to submit a plan to the user for review. Before calling this tool you must conduct interactive and exploratory analysis in order to submit a quality plan. Ask questions. Explore the codebase for context if needed. Only call submit_plan once you have enough details to create a quality plan. Work with the user to get those details. Pass either markdown text or an absolute path to a .md file. Use use_latest_message: true to submit the latest assistant message from the current session as the plan.",
         args: {
           plan: tool.schema
             .string()
-            .describe("The plan — either markdown text or an absolute path to a .md file on disk."),
+            .describe("The plan — either markdown text or an absolute path to a .md file. Ignored when use_latest_message is true."),
+          use_latest_message: tool.schema
+            .boolean()
+            .describe("When true, extract the latest assistant message from the current OpenCode session and use it as the plan. The plan argument is ignored.")
+            .default(false),
+          name: tool.schema
+            .string()
+            .describe("Optional user-friendly name for the plan. Used in URLs and session listing for easy identification.")
+            .optional(),
         },
 
         async execute(args, context) {
+const invokingAgent = (context as { agent?: string }).agent;
+          if (shouldRejectSubmitPlanForAgent(invokingAgent, workflowOptions)) {
+            return `Plannotator is configured for plan-agent mode. submit_plan can only be called by: ${workflowOptions.planningAgents.join(", ")}.
+
+Use /plannotator-last or /plannotator-annotate for manual review, or set workflow to all-agents to allow broader submit_plan access.`;
+          }
+
           // Auto-detect: file path or plan text
+// REQ-NEW: use_latest_message — extract latest assistant message as plan
           let planContent: string;
           let sourceFilePath: string | undefined;
-          try {
-            const resolved = resolvePlanContent(args.plan);
-            planContent = resolved.content;
-            sourceFilePath = resolved.filePath;
-          } catch (err) {
-            return `Error: ${err instanceof Error ? err.message : String(err)}`;
+          if (args.use_latest_message) {
+            let messages: any[] | undefined;
+            try {
+              const response = await ctx.client.session.messages({
+                path: { id: context.sessionID },
+              });
+              messages = response.data;
+            } catch {
+              return "Error: Could not fetch session messages. Ensure OpenCode session is active.";
+            }
+
+            // Walk backward — find last assistant message with text parts
+            let lastAssistantText: string | null = null;
+            if (messages) {
+              for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i];
+                if (msg.info?.role === "assistant") {
+                  const textParts = (msg.parts ?? [])
+                    .filter((p: any) => p.type === "text" && p.text?.trim())
+                    .map((p: any) => p.text as string);
+                  if (textParts.length > 0) {
+                    lastAssistantText = textParts.join("\n");
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (!lastAssistantText) {
+              return "Error: The latest assistant message has no text content to submit as a plan. Write your plan and pass it as the plan argument, or try again once the assistant has responded with text.";
+            }
+            planContent = lastAssistantText;
+          } else {
+            // Auto-detect: file path or plan text
+            try {
+              const resolved = resolvePlanContent(args.plan ?? "");
+              planContent = resolved.content;
+              sourceFilePath = resolved.filePath;
+            } catch (err) {
+              return `Error: ${err instanceof Error ? err.message : String(err)}`;
+            }
           }
 
           if (!planContent.trim()) {
@@ -424,54 +511,159 @@ Do NOT proceed with implementation until your plan is approved.`);
           }
 
           const sharingEnabled = await getSharingEnabled();
-          const server = await startPlannotatorServer({
-            plan: planContent,
-            origin: "opencode",
-            sharingEnabled,
-            shareBaseUrl: getShareBaseUrl(),
-            htmlContent: getPlanHtml(),
-            opencodeClient: ctx.client,
-            onReady: async (url, isRemote, port) => {
-              handleServerReady(url, isRemote, port);
-            },
-          });
-
           const timeoutSeconds = getPlanTimeoutSeconds();
           const timeoutMs = timeoutSeconds === null ? null : timeoutSeconds * 1000;
 
-          const result = timeoutMs === null
-            ? await server.waitForDecision()
-            : await new Promise<Awaited<ReturnType<typeof server.waitForDecision>>>((resolve) => {
-                const timeoutId = setTimeout(
-                  () =>
-                    resolve({
-                      approved: false,
-                      feedback: `[Plannotator] No response within ${timeoutSeconds} seconds. Port released automatically. Please call submit_plan again.`,
-                    }),
-                  timeoutMs
-                );
+          let result: { approved: boolean; feedback?: string; savedPath?: string; agentSwitch?: string; permissionMode?: string };
 
-                server.waitForDecision().then((r) => {
-                  clearTimeout(timeoutId);
-                  resolve(r);
-                });
+          if (isClientMode()) {
+            // ── Client mode: connect to running CLI server via HTTP ──────────
+            const serverBaseUrl = getServerUrl(0); // 0 = ignored when SERVER_URL is set
+            let sessionId: string;
+            let sessionUrl: string;
+
+            try {
+              // Register a new plan session with the running server
+              const createRes = await fetch(`${serverBaseUrl}/api/sessions`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  plan: planContent,
+                  mode: "plan",
+                  cwd: ctx.directory,
+                  name: args.name,
+                }),
               });
-          await Bun.sleep(1500);
-          server.stop();
+
+              if (!createRes.ok) {
+                const err = await createRes.json().catch(() => ({ error: createRes.statusText }));
+                return `Error: Could not connect to plannotator server (${createRes.status}): ${err.error ?? createRes.statusText}. Is the server running?`;
+              }
+
+              const created = await createRes.json();
+              sessionId = created.sessionId;
+              sessionUrl = created.url;
+            } catch (err) {
+              return `Error: Could not reach plannotator server at ${serverBaseUrl}. Make sure the server is running (e.g. \`plannotator serve\` or a long-running CLI command).`;
+            }
+
+            // Open the review UI in the browser
+            await openBrowser(sessionUrl, { isRemote: true });
+
+            // Poll for decision (with optional timeout)
+            const pollUntil = timeoutMs ? Date.now() + timeoutMs : 0;
+            let settled = false;
+
+            result = await new Promise<typeof result>((resolve) => {
+              // Try SSE first (real-time, no polling)
+              let eventSource: EventSource | null = null;
+              let eventSourceClosed = false;
+
+              const sseUrl = `${sessionUrl}/api/decision/stream`;
+              try {
+                eventSource = new EventSource(sseUrl);
+              } catch {
+                eventSource = null;
+              }
+
+              const cleanup = () => {
+                settled = true;
+                eventSource?.close();
+              };
+
+              if (eventSource) {
+                eventSource.addEventListener("connected", () => {
+                  // SSE connected, waiting for user decision...
+                });
+
+                eventSource.addEventListener("decision", (e: MessageEvent) => {
+                  cleanup();
+                  resolve(JSON.parse(e.data));
+                });
+
+                eventSource.addEventListener("error", () => {
+                  if (!eventSourceClosed) {
+                    eventSourceClosed = true;
+                    eventSource?.close();
+                    // Fall back to polling
+                    startPolling();
+                  }
+                });
+              }
+
+              const startPolling = () => {
+                const poll = async () => {
+                  if (settled) return;
+                  if (pollUntil && Date.now() > pollUntil) {
+                    cleanup();
+                    resolve({ approved: false, feedback: `[Plannotator] No response within ${timeoutSeconds} seconds. Please call submit_plan again.` });
+                    return;
+                  }
+                  try {
+                    const res = await fetch(`${sessionUrl}/api/decision`);
+                    if (res.ok) {
+                      const data = await res.json();
+                      if (!data.pending) {
+                        cleanup();
+                        resolve({ approved: data.approved, feedback: data.feedback, savedPath: data.savedPath, agentSwitch: data.agentSwitch, permissionMode: data.permissionMode });
+                        return;
+                      }
+                    }
+                  } catch { /* ignore poll errors */ }
+                  if (!settled) setTimeout(poll, 1000);
+                };
+                poll();
+              };
+
+              // If SSE failed to connect, start polling immediately
+              if (!eventSource) startPolling();
+            });
+          } else {
+            // ── Spawn mode: start own server (original behavior) ─────────────
+            const server = await startPlannotatorServer({
+              plan: planContent,
+              origin: "opencode",
+              sharingEnabled,
+              shareBaseUrl: getShareBaseUrl(),
+              htmlContent: getPlanHtml(),
+              opencodeClient: ctx.client,
+              sessionId: context.sessionID,
+              cwd: ctx.directory,
+              name: args.name,
+              onReady: async (url, isRemote, port) => {
+                handleServerReady(url, isRemote, port);
+              },
+            });
+
+            result = timeoutMs === null
+              ? await server.waitForDecision(context.sessionID)
+              : await new Promise<typeof result>((resolve) => {
+                  const timeoutId = setTimeout(
+                    () =>
+                      resolve({
+                        approved: false,
+                        feedback: `[Plannotator] No response within ${timeoutSeconds} seconds. Port released automatically. Please call submit_plan again.`,
+                      }),
+                    timeoutMs
+                  );
+
+                  server.waitForDecision(context.sessionID).then((r) => {
+                    clearTimeout(timeoutId);
+                    resolve(r);
+                  }).catch((err: unknown) => {
+                    clearTimeout(timeoutId);
+                    resolve({ approved: false, feedback: `Decision failed: ${err instanceof Error ? err.message : String(err)}` });
+                  });
+                });
+            await Bun.sleep(1500);
+            server.stop();
+          }
 
           if (result.approved) {
             const shouldSwitchAgent = result.agentSwitch && result.agentSwitch !== 'disabled';
             const targetAgent = result.agentSwitch || 'build';
 
             if (shouldSwitchAgent) {
-              try {
-                await ctx.client.tui.executeCommand({
-                  body: { command: "agent_cycle" },
-                });
-              } catch {
-                // Silently fail
-              }
-
               try {
                 await ctx.client.session.prompt({
                   path: { id: context.sessionID },
@@ -507,8 +699,89 @@ Proceed with implementation, incorporating these notes where applicable.`;
           }
         },
       }),
-    },
-  };
+      annotate_last: tool({
+        description:
+          "Annotate the last assistant message from the current OpenCode session with feedback.",
+        args: {},
+
+        async execute(_args, context) {
+          // Fetch messages from the current session
+          let messages: any[] | undefined;
+          try {
+            const response = await ctx.client.session.messages({
+              path: { id: context.sessionID },
+            });
+            messages = response.data;
+          } catch {
+            return "Error: Could not fetch session messages.";
+          }
+
+          // Walk backward, find last assistant message with text
+          let lastText: string | null = null;
+          if (messages) {
+            for (let i = messages.length - 1; i >= 0; i--) {
+              const msg = messages[i];
+              if (msg.info.role === "assistant") {
+                const textParts = msg.parts
+                  .filter((p: any) => p.type === "text" && p.text?.trim())
+                  .map((p: any) => p.text);
+                if (textParts.length > 0) {
+                  lastText = textParts.join("\n");
+                  break;
+                }
+              }
+            }
+          }
+
+          if (!lastText) {
+            return "Error: No assistant message found in session.";
+          }
+
+          const sharingEnabled = await getSharingEnabled();
+          const server = await startAnnotateServer({
+            markdown: lastText,
+            filePath: "last-message",
+            origin: "opencode",
+            mode: "annotate-last",
+            sharingEnabled,
+            shareBaseUrl: getShareBaseUrl(),
+            htmlContent: getPlanHtml(),
+            sessionId: context.sessionID,
+            cwd: ctx.directory,
+            onReady: handleAnnotateServerReady,
+          });
+
+          const result = await server.waitForDecision();
+          await Bun.sleep(1500);
+          server.stop();
+
+          if (result.exit || !result.feedback) {
+            return "Annotation cancelled.";
+          }
+
+          // Inject feedback as a user prompt so the agent processes it
+          try {
+            await ctx.client.session.prompt({
+              path: { id: context.sessionID },
+              body: {
+                parts: [{
+                  type: "text",
+                  text: `# Message Annotations\n\n${result.feedback}\n\nPlease address the annotation feedback above.`,
+                }],
+              },
+            });
+          } catch {
+            // Session may not be available — return feedback as text
+            return `# Message Annotations\n\n${result.feedback}`;
+          }
+
+          return `# Annotations submitted.\n\n${result.feedback}`;
+        },
+      }),
+    };
+  }
+
+  return plugin;
 };
 
 export default PlannotatorPlugin;

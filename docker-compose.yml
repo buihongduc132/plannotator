@@ -1,0 +1,124 @@
+name: plannotator-remote
+
+# ============================================================
+# Plannotator — remote-accessible multi-session server
+# ============================================================
+#
+# Profiles:
+#   smoke-test  — run automated smoke test (18 cases, all pass)
+#                 docker compose --profile smoke-test up --abort-on-container-exit
+#
+#   server      — long-running server accessible from any machine on the network
+#                 docker compose --profile server up --detach
+#                 docker compose --profile server logs -f
+#                 docker compose --profile server down
+#
+#   interactive — two interactive CLI shells for manual multi-session testing
+#                 docker compose --profile interactive up
+#
+# Remote access:
+#   - Server binds to 0.0.0.0:19432 (PLANNOTATOR_REMOTE=1)
+#   - Any machine with network access to the host can reach it
+#   - Use PLANNOTATOR_PORT to change the port
+#   - Sessions use /s/<sessionId>/api/* URL routing
+# ============================================================
+
+services:
+  # ----------------------------------------------------------
+  # smoke-test: automated verification (18 test cases)
+  # ----------------------------------------------------------
+  smoke-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: plannotator:local
+    container_name: plannotator-smoke
+    volumes:
+      - .:/app
+    environment:
+      PLANNOTATOR_REMOTE: "0"
+      PLANNOTATOR_MAX_SESSIONS: "2"
+      HOME: /app/home
+    init: true
+    profiles:
+      - smoke-test
+    command: >
+      sh -c "
+        bun install --no-optional 2>/dev/null || bun install &&
+        bun run test-multi-session.ts
+      "
+
+  # ----------------------------------------------------------
+  # server: long-running multi-session plannotator server
+  # Bind to 0.0.0.0 so any remote machine can access it
+  # ----------------------------------------------------------
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: plannotator:local
+    container_name: plannotator-server
+    hostname: plannotator-server
+    # Expose port so other machines can reach the server
+    # Change 19432 if you want a different port
+    ports:
+      - "19432:19432"
+    volumes:
+      - plannotator-home:/app/home
+    environment:
+      # REMOTE mode: binds 0.0.0.0:19432 — accessible from any machine
+      PLANNOTATOR_REMOTE: "1"
+      # Fixed port (matches the port mapping above)
+      PLANNOTATOR_PORT: "19432"
+      # Allow up to 10 concurrent sessions
+      PLANNOTATOR_MAX_SESSIONS: "10"
+      # Optional: override host binding (default: 0.0.0.0 in remote mode)
+      # PLANNOTATOR_HOST: "0.0.0.0"
+      # External base URL — used for session URLs in browser + share links
+      # Replace 192.168.1.161 with the host machine's actual LAN IP
+      PLANNOTATOR_SERVER_URL: "http://192.168.1.161:19432"
+      HOME: /app/home
+    init: true
+    profiles:
+      - server
+    # Run the dedicated remote server entry point
+    command: ["bun", "run", "apps/hook/server/serve.ts"]
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # interactive shells — manual multi-session testing
+  # ----------------------------------------------------------
+  shell-a:
+    image: plannotator:local
+    container_name: plannotator-shell-a
+    hostname: plannotator-shell-a
+    volumes:
+      - .:/app
+    environment:
+      PLANNOTATOR_REMOTE: "1"
+      PLANNOTATOR_PORT: "19432"
+      PLANNOTATOR_MAX_SESSIONS: "10"
+      HOME: /app/home
+    init: true
+    profiles:
+      - interactive
+    command: ["bun", "run", "apps/hook/server/index.ts", "--help"]
+
+  shell-b:
+    image: plannotator:local
+    container_name: plannotator-shell-b
+    hostname: plannotator-shell-b
+    volumes:
+      - .:/app
+    environment:
+      PLANNOTATOR_REMOTE: "1"
+      PLANNOTATOR_PORT: "19432"
+      PLANNOTATOR_MAX_SESSIONS: "10"
+      HOME: /app/home
+    init: true
+    profiles:
+      - interactive
+    command: ["bun", "run", "apps/hook/server/index.ts", "--help"]
+
+volumes:
+  plannotator-home:

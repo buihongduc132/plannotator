@@ -13,10 +13,12 @@
 import React from 'react';
 import { PlanDiffBadge } from './plan-diff/PlanDiffBadge';
 import type { PlanDiffStats } from '../utils/planDiffEngine';
+import { hostnameOrFallback } from '@plannotator/shared/project';
 
 export interface DocBadgesProps {
   layout: 'column' | 'row';
   repoInfo?: { display: string; branch?: string } | null;
+  cwd?: string | null;
   planDiffStats?: PlanDiffStats | null;
   isPlanDiffActive?: boolean;
   hasPreviousVersion?: boolean;
@@ -24,11 +26,14 @@ export interface DocBadgesProps {
   showDemoBadge?: boolean;
   archiveInfo?: { status: 'approved' | 'denied' | 'unknown'; timestamp: string; title: string } | null;
   linkedDocInfo?: { filepath: string; onBack: () => void; label?: string; backLabel?: string } | null;
+  /** Source attribution for HTML/URL annotations (e.g. "https://..." or "index.html") */
+  sourceInfo?: string;
 }
 
 export const DocBadges: React.FC<DocBadgesProps> = ({
   layout,
   repoInfo,
+  cwd,
   planDiffStats,
   isPlanDiffActive,
   hasPreviousVersion,
@@ -36,6 +41,7 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
   showDemoBadge,
   archiveInfo,
   linkedDocInfo,
+  sourceInfo,
 }) => {
   const isRow = layout === 'row';
 
@@ -44,7 +50,7 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
   // will truly produce visible output to avoid an empty wrapper div.
   const anything = isRow
     ? (!linkedDocInfo && ((hasPreviousVersion && planDiffStats) || archiveInfo))
-    : repoInfo || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo;
+: repoInfo || cwd || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo || sourceInfo;
   if (!anything) return null;
 
   // Row layout: single horizontal line. Column layout: stacked rows.
@@ -57,15 +63,17 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
       {/* Row layout (sticky lane) omits repo/branch to keep the bar compact —
           they'd otherwise push the container wide enough to visually extend
           under the action buttons. Plan-diff badge still renders below. */}
-      {repoInfo && !linkedDocInfo && !isRow && (
+      {(repoInfo || cwd) && !linkedDocInfo && !isRow && (
         <div className="flex items-center gap-1.5">
-          <span
-            className="px-1.5 py-0.5 bg-muted/50 rounded truncate max-w-[140px]"
-            title={repoInfo.display}
-          >
-            {repoInfo.display}
-          </span>
-          {repoInfo.branch && (
+          {repoInfo && (
+            <span
+              className="px-1.5 py-0.5 bg-muted/50 rounded truncate max-w-[140px]"
+              title={repoInfo.display}
+            >
+              {repoInfo.display}
+            </span>
+          )}
+          {repoInfo?.branch && (
             <span
               className="px-1.5 py-0.5 bg-muted/30 rounded max-w-[120px] flex items-center gap-1 overflow-hidden"
               title={repoInfo.branch}
@@ -76,7 +84,29 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
               <span className="truncate">{repoInfo.branch}</span>
             </span>
           )}
+          {cwd && (
+            <span
+              className="px-1.5 py-0.5 bg-muted/30 rounded max-w-[200px] flex items-center gap-1 overflow-hidden font-mono"
+              title={cwd}
+            >
+              <svg className="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              </svg>
+              <span className="truncate">{cwd.split('/').pop() || cwd}</span>
+            </span>
+          )}
         </div>
+      )}
+
+      {sourceInfo && !linkedDocInfo && !isRow && (
+        <span
+          className="px-1.5 py-0.5 bg-muted/30 rounded truncate max-w-[200px]"
+          title={sourceInfo}
+        >
+          {/^https?:\/\//i.test(sourceInfo)
+            ? hostnameOrFallback(sourceInfo)
+            : sourceInfo}
+        </span>
       )}
 
       {onPlanDiffToggle && !linkedDocInfo && (

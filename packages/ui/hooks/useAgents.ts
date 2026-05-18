@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Origin } from '@plannotator/shared/agents';
 import { getAgentSwitchSettings } from '../utils/agentSwitch';
+import { getApiUrl } from '../utils/apiUrl';
 
 export interface Agent {
   id: string;
@@ -33,7 +34,7 @@ export function useAgents(origin: Origin | null): UseAgentsResult {
     if (origin !== 'opencode') return;
 
     setIsLoading(true);
-    fetch('/api/agents')
+    fetch(getApiUrl('/api/agents'))
       .then(res => res.json())
       .then((data: { agents?: Agent[] }) => {
         if (data.agents?.length) {

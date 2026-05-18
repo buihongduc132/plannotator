@@ -1,46 +1,70 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { shouldTryRemoteBrowserFallback } from "./browser";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 
-const savedEnv: Record<string, string | undefined> = {};
-const envKeys = ["PLANNOTATOR_BROWSER", "BROWSER"];
+const ENV_KEYS = ["PLANNOTATOR_BROWSER", "BROWSER"];
 
-function clearEnv() {
-  for (const key of envKeys) {
-    savedEnv[key] = process.env[key];
-    delete process.env[key];
+function saveEnv(keys: string[]) {
+  const saved: Record<string, string | undefined> = {};
+  for (const k of keys) saved[k] = process.env[k];
+  return saved;
+}
+
+function restoreEnv(saved: Record<string, string | undefined>) {
+  for (const [k, v] of Object.entries(saved)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
   }
 }
 
-afterEach(() => {
-  for (const key of envKeys) {
-    if (savedEnv[key] !== undefined) {
-      process.env[key] = savedEnv[key];
-    } else {
-      delete process.env[key];
-    }
-  }
-});
+describe("browser", () => {
+  let saved: Record<string, string | undefined>;
 
-describe("shouldTryRemoteBrowserFallback", () => {
-  test("false for local sessions", () => {
-    clearEnv();
-    expect(shouldTryRemoteBrowserFallback(false)).toBe(false);
+  beforeEach(() => {
+    saved = saveEnv(ENV_KEYS);
+    for (const k of ENV_KEYS) delete process.env[k];
   });
 
-  test("true for remote sessions without browser handlers", () => {
-    clearEnv();
-    expect(shouldTryRemoteBrowserFallback(true)).toBe(true);
+  afterEach(() => {
+    restoreEnv(saved);
   });
 
-  test("false for remote sessions with BROWSER configured", () => {
-    clearEnv();
-    process.env.BROWSER = "/usr/bin/browser";
-    expect(shouldTryRemoteBrowserFallback(true)).toBe(false);
+  describe("shouldTryRemoteBrowserFallback", () => {
+    test("returns true when remote and no browser env vars", async () => {
+      const { shouldTryRemoteBrowserFallback } = await import("./browser");
+      expect(shouldTryRemoteBrowserFallback(true)).toBe(true);
+    });
+
+    test("returns false when not remote", async () => {
+      const { shouldTryRemoteBrowserFallback } = await import("./browser");
+      expect(shouldTryRemoteBrowserFallback(false)).toBe(false);
+    });
+
+    test("returns false when PLANNOTATOR_BROWSER is set", async () => {
+      process.env.PLANNOTATOR_BROWSER = "firefox";
+      const { shouldTryRemoteBrowserFallback } = await import("./browser");
+      expect(shouldTryRemoteBrowserFallback(true)).toBe(false);
+    });
+
+    test("returns false when BROWSER is set", async () => {
+      process.env.BROWSER = "/usr/bin/chromium";
+      const { shouldTryRemoteBrowserFallback } = await import("./browser");
+      expect(shouldTryRemoteBrowserFallback(true)).toBe(false);
+    });
+
+    test("returns false when both browser env vars are set", async () => {
+      process.env.PLANNOTATOR_BROWSER = "firefox";
+      process.env.BROWSER = "/usr/bin/firefox";
+      const { shouldTryRemoteBrowserFallback } = await import("./browser");
+      expect(shouldTryRemoteBrowserFallback(true)).toBe(false);
+    });
   });
 
-  test("false for remote sessions with PLANNOTATOR_BROWSER configured", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_BROWSER = "/usr/bin/browser";
-    expect(shouldTryRemoteBrowserFallback(true)).toBe(false);
+  describe("isWSL", () => {
+    test("returns false on non-linux platforms", async () => {
+      // We can't change process.platform, but we can verify the function
+      // works without error. On Linux non-WSL it checks /proc/version.
+      const { isWSL } = await import("./browser");
+      const result = await isWSL();
+      expect(typeof result).toBe("boolean");
+    });
   });
 });

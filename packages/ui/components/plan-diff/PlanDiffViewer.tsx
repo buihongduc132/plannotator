@@ -8,6 +8,7 @@
 
 import React, { useState } from "react";
 import type { PlanDiffBlock, PlanDiffStats } from "../../utils/planDiffEngine";
+import { getApiUrl } from "../../utils/apiUrl";
 import type { Annotation, EditorMode } from "../../types";
 import {
   PlanDiffModeSwitcher,
@@ -62,7 +63,7 @@ export const PlanDiffViewer: React.FC<PlanDiffViewerProps> = ({
     setVscodeDiffLoading(true);
     setVscodeDiffError(null);
     try {
-      const res = await fetch("/api/plan/vscode-diff", {
+      const res = await fetch(getApiUrl("/api/plan/vscode-diff"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ baseVersion }),
@@ -177,7 +178,9 @@ export const PlanDiffViewer: React.FC<PlanDiffViewerProps> = ({
         )}
 
         {/* Diff content */}
-        {diffMode === "clean" ? (
+        {diffMode === "raw" ? (
+          <PlanRawDiffView blocks={diffBlocks} />
+        ) : (
           <PlanCleanDiffView
             blocks={diffBlocks}
             annotations={annotations}
@@ -185,9 +188,8 @@ export const PlanDiffViewer: React.FC<PlanDiffViewerProps> = ({
             onSelectAnnotation={onSelectAnnotation}
             selectedAnnotationId={selectedAnnotationId}
             mode={mode}
+            wordLevel={diffMode === "clean"}
           />
-        ) : (
-          <PlanRawDiffView blocks={diffBlocks} />
         )}
       </article>
     </div>

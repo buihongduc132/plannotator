@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import type { PRContext } from '@plannotator/shared/pr-provider';
 import type { PRMetadata } from '@plannotator/shared/pr-provider';
+import { getApiUrl } from '@plannotator/ui/utils/apiUrl';
 
 export function usePRContext(prMetadata: PRMetadata | null) {
   const [prContext, setPRContext] = useState<PRContext | null>(null);
@@ -15,7 +16,7 @@ export function usePRContext(prMetadata: PRMetadata | null) {
     setError(null);
 
     try {
-      const res = await fetch('/api/pr-context');
+      const res = await fetch(getApiUrl('/api/pr-context'));
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || `HTTP ${res.status}`);

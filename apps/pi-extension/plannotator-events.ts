@@ -1,5 +1,3 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { DiffType } from "./server.js";
@@ -76,10 +74,8 @@ export interface PlannotatorReviewStatusPayload {
 	reviewId: string;
 }
 
-export type PlannotatorReviewStatusResult =
-	| { status: "pending" }
-	| ({ status: "completed" } & PlannotatorReviewResultEvent)
-	| { status: "missing" };
+import type { PlannotatorReviewStatusResult } from "./review-status-store.js";
+export type { PlannotatorReviewStatusResult } from "./review-status-store.js";
 
 export interface PlannotatorCodeReviewPayload {
 	diffType?: DiffType;
@@ -100,10 +96,16 @@ export interface PlannotatorAnnotatePayload {
 	markdown?: string;
 	mode?: "annotate" | "annotate-folder" | "annotate-last";
 	folderPath?: string;
+	/** Enable review-gate UX (Approve / Annotate / Close), #570 */
+	gate?: boolean;
 }
 
 export interface PlannotatorAnnotationResult {
 	feedback: string;
+	/** True when the reviewer closed the session without providing feedback. */
+	exit?: boolean;
+	/** True when the reviewer clicked Approve in review-gate mode, #570 */
+	approved?: boolean;
 }
 
 export interface PlannotatorArchivePayload {
@@ -142,35 +144,8 @@ function isPlannotatorAction(value: unknown): value is PlannotatorAction {
 	);
 }
 
-const REVIEW_STATUS_PATH = join(homedir(), ".pi", "plannotator-review-status.json");
-
-type StoredReviewStatus = Record<string, PlannotatorReviewStatusResult>;
-
-function readStoredReviewStatuses(): StoredReviewStatus {
-	try {
-		if (!existsSync(REVIEW_STATUS_PATH)) return {};
-		const raw = readFileSync(REVIEW_STATUS_PATH, "utf-8");
-		const parsed = JSON.parse(raw) as StoredReviewStatus;
-		return parsed && typeof parsed === "object" ? parsed : {};
-	} catch {
-		return {};
-	}
-}
-
-function writeStoredReviewStatuses(statuses: StoredReviewStatus): void {
-	mkdirSync(dirname(REVIEW_STATUS_PATH), { recursive: true });
-	writeFileSync(REVIEW_STATUS_PATH, JSON.stringify(statuses, null, 2));
-}
-
-function setStoredReviewStatus(reviewId: string, status: PlannotatorReviewStatusResult): void {
-	const statuses = readStoredReviewStatuses();
-	statuses[reviewId] = status;
-	writeStoredReviewStatuses(statuses);
-}
-
-function getStoredReviewStatus(reviewId: string): PlannotatorReviewStatusResult {
-	return readStoredReviewStatuses()[reviewId] ?? { status: "missing" };
-}
+import { createReviewStatusStore } from "./review-status-store.js";
+const reviewStatusStore = createReviewStatusStore();
 
 function createActiveSessionContext() {
 	let currentCtx: ExtensionContext | undefined;
@@ -211,7 +186,7 @@ export function registerPlannotatorEventListeners(pi: ExtensionAPI): void {
 					request.respond({ status: "error", error: "Missing reviewId for review-status request." });
 					return;
 				}
-				request.respond({ status: "handled", result: getStoredReviewStatus(reviewId) });
+				request.respond({ status: "handled", result: reviewStatusStore.get(reviewId) });
 				return;
 			}
 
@@ -228,7 +203,7 @@ export function registerPlannotatorEventListeners(pi: ExtensionAPI): void {
 						return;
 					}
 					const session = await startPlanReviewBrowserSession(ctx, planContent);
-					setStoredReviewStatus(session.reviewId, { status: "pending" });
+					reviewStatusStore.set(session.reviewId, { status: "pending" });
 					session.onDecision((result) => {
 						const reviewResult = {
 							reviewId: session.reviewId,
@@ -238,7 +213,7 @@ export function registerPlannotatorEventListeners(pi: ExtensionAPI): void {
 							agentSwitch: result.agentSwitch,
 							permissionMode: result.permissionMode,
 						} satisfies PlannotatorReviewResultEvent;
-						setStoredReviewStatus(session.reviewId, { status: "completed", ...reviewResult });
+						reviewStatusStore.set(session.reviewId, { status: "completed", ...reviewResult });
 						pi.events.emit(PLANNOTATOR_REVIEW_RESULT_CHANNEL, reviewResult);
 					});
 					request.respond({
@@ -272,6 +247,8 @@ export function registerPlannotatorEventListeners(pi: ExtensionAPI): void {
 						payload.markdown ?? "",
 						payload.mode ?? "annotate",
 						payload.folderPath,
+						undefined,
+						payload.gate,
 					);
 					request.respond({ status: "handled", result });
 					return;
@@ -283,7 +260,7 @@ export function registerPlannotatorEventListeners(pi: ExtensionAPI): void {
 						request.respond({ status: "unavailable", error: "No assistant message found in session." });
 						return;
 					}
-					const result = await openLastMessageAnnotation(ctx, lastText);
+					const result = await openLastMessageAnnotation(ctx, lastText, payload?.gate);
 					request.respond({ status: "handled", result });
 					return;
 				}

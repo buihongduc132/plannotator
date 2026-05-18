@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
+import { startPlanReviewServer } from "./server";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getGitContext, runGitDiff, startReviewServer } from "./server";
@@ -79,6 +80,80 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+describe("pi plan review server", () => {
+  test("falls back to a random port when the configured port is already in use", async () => {
+    const homeDir = makeTempDir("plannotator-pi-home-");
+    process.env.HOME = homeDir;
+    process.env.PLANNOTATOR_REMOTE = "true";
+    delete process.env.PLANNOTATOR_PORT;
+
+    const firstServer = await startPlanReviewServer({
+      plan: "# First Plan\n\nKeep session one alive.",
+      origin: "pi",
+      htmlContent: "<!doctype html><html><body>plan</body></html>",
+    });
+
+    let secondServer: Awaited<ReturnType<typeof startPlanReviewServer>> | undefined;
+    try {
+      secondServer = await startPlanReviewServer({
+        plan: "# Second Plan\n\nOpen another session on the same machine.",
+        origin: "pi",
+        htmlContent: "<!doctype html><html><body>plan</body></html>",
+      });
+
+      expect(firstServer.portSource).toBe("remote-default");
+      expect(secondServer.portSource).toBe("remote-default");
+      expect(firstServer.port).toBeGreaterThan(0);
+      expect(secondServer.port).toBeGreaterThan(0);
+      expect(secondServer.port).not.toBe(firstServer.port);
+
+      const firstPlan = await fetch(`${firstServer.url}/api/plan`).then((response) => response.json()) as {
+        plan: string;
+      };
+      const secondPlan = await fetch(`${secondServer.url}/api/plan`).then((response) => response.json()) as {
+        plan: string;
+      };
+
+      expect(firstPlan.plan).toContain("First Plan");
+      expect(secondPlan.plan).toContain("Second Plan");
+    } finally {
+      secondServer?.stop();
+      firstServer.stop();
+      delete process.env.PLANNOTATOR_REMOTE;
+      delete process.env.PLANNOTATOR_PORT;
+    }
+  });
+
+  test("uses dynamic fallback when explicit PLANNOTATOR_PORT is occupied", async () => {
+    const homeDir = makeTempDir("plannotator-pi-home-");
+    process.env.HOME = homeDir;
+    process.env.PLANNOTATOR_PORT = String(await reservePort());
+
+    const firstServer = await startPlanReviewServer({
+      plan: "# Explicit Port One",
+      origin: "pi",
+      htmlContent: "<!doctype html><html><body>plan</body></html>",
+    });
+
+    let secondServer: Awaited<ReturnType<typeof startPlanReviewServer>> | undefined;
+    try {
+      secondServer = await startPlanReviewServer({
+        plan: "# Explicit Port Two",
+        origin: "pi",
+        htmlContent: "<!doctype html><html><body>plan</body></html>",
+      });
+
+      expect(firstServer.portSource).toBe("env");
+      expect(secondServer.portSource).toBe("env");
+      expect(secondServer.port).not.toBe(firstServer.port);
+      expect(secondServer.port).toBeGreaterThan(0);
+    } finally {
+      secondServer?.stop();
+      firstServer.stop();
+    }
+  });
 });
 
 describe("pi review server", () => {
@@ -299,6 +374,141 @@ describe("pi review server", () => {
           feedback: "LGTM - no changes requested.",
           annotations: [],
         }),
+      });
+      await server.waitForDecision();
+    } finally {
+      server.stop();
+    }
+  }, 15_000);
+
+  test("round-trips the active base branch through /api/diff and /api/diff/switch", async () => {
+    const homeDir = makeTempDir("plannotator-pi-home-");
+    const repoDir = initRepo();
+    process.env.HOME = homeDir;
+    process.chdir(repoDir);
+    process.env.PLANNOTATOR_PORT = String(await reservePort());
+
+    // Create a second branch the picker can switch to, then branch off it so
+    // currentBranch !== defaultBranch and the branch/merge-base options appear.
+    git(repoDir, ["checkout", "-b", "develop"]);
+    writeFileSync(join(repoDir, "develop-file.txt"), "develop\n", "utf-8");
+    git(repoDir, ["add", "develop-file.txt"]);
+    git(repoDir, ["commit", "-m", "develop commit"]);
+    git(repoDir, ["checkout", "-b", "feature/x"]);
+    writeFileSync(join(repoDir, "feature-file.txt"), "feature\n", "utf-8");
+    git(repoDir, ["add", "feature-file.txt"]);
+    git(repoDir, ["commit", "-m", "feature commit"]);
+
+    const gitContext = await getGitContext();
+    const diff = await runGitDiff("uncommitted", gitContext.defaultBranch);
+
+    const server = await startReviewServer({
+      rawPatch: diff.patch,
+      gitRef: diff.label,
+      error: diff.error,
+      diffType: "uncommitted",
+      gitContext,
+      origin: "pi",
+      htmlContent: "<!doctype html><html><body>review</body></html>",
+    });
+
+    try {
+      // Initial load: server echoes the detected default as the active base.
+      const initial = await fetch(`${server.url}/api/diff`).then((r) => r.json()) as {
+        base?: string;
+        gitContext?: { defaultBranch: string };
+      };
+      expect(initial.base).toBe(gitContext.defaultBranch);
+      expect(initial.base).toBe(initial.gitContext?.defaultBranch);
+
+      // Switch to a custom base — response must echo the resolved base.
+      const switchResponse = await fetch(`${server.url}/api/diff/switch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ diffType: "branch", base: "develop" }),
+      });
+      expect(switchResponse.status).toBe(200);
+      const switched = await switchResponse.json() as { base?: string; diffType: string };
+      expect(switched.base).toBe("develop");
+      expect(switched.diffType).toBe("branch");
+
+      // Subsequent /api/diff load reflects the switched base — this is what
+      // survives a page refresh / reconnect.
+      const rehydrate = await fetch(`${server.url}/api/diff`).then((r) => r.json()) as {
+        base?: string;
+      };
+      expect(rehydrate.base).toBe("develop");
+
+      // Unknown refs pass through verbatim — the resolver trusts callers so
+      // unusual-but-valid refs (tags, SHAs, non-origin remotes) work. Truly
+      // invalid refs surface via the diff error, not via a silent swap.
+      const unknownResponse = await fetch(`${server.url}/api/diff/switch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ diffType: "branch", base: "nope-does-not-exist" }),
+      });
+      const unknown = await unknownResponse.json() as { base?: string; error?: string };
+      expect(unknown.base).toBe("nope-does-not-exist");
+      expect(unknown.error).toBeTruthy();
+
+      // Feedback to clean up the waitForDecision promise.
+      await fetch(`${server.url}/api/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved: false, feedback: "done", annotations: [] }),
+      });
+      await server.waitForDecision();
+    } finally {
+      server.stop();
+    }
+  }, 15_000);
+
+  test("initialBase overrides gitContext.defaultBranch in server state", async () => {
+    // Simulates a programmatic caller (Pi event bus, other extensions) that
+    // opens a review against a non-default base. The server's currentBase —
+    // which drives /api/diff, agent prompts, and file-content fetches — must
+    // honor that override instead of falling back to the detected default.
+    const homeDir = makeTempDir("plannotator-pi-home-");
+    const repoDir = initRepo();
+    process.env.HOME = homeDir;
+    process.chdir(repoDir);
+    process.env.PLANNOTATOR_PORT = String(await reservePort());
+
+    git(repoDir, ["checkout", "-b", "develop"]);
+    writeFileSync(join(repoDir, "develop-file.txt"), "develop\n", "utf-8");
+    git(repoDir, ["add", "develop-file.txt"]);
+    git(repoDir, ["commit", "-m", "develop commit"]);
+    git(repoDir, ["checkout", "-b", "feature/x"]);
+
+    const gitContext = await getGitContext();
+    // Detected default is "main"; caller explicitly wants "develop".
+    expect(gitContext.defaultBranch).toBe("main");
+    const diff = await runGitDiff("branch", "develop");
+
+    const server = await startReviewServer({
+      rawPatch: diff.patch,
+      gitRef: diff.label,
+      error: diff.error,
+      diffType: "branch",
+      gitContext,
+      initialBase: "develop",
+      origin: "pi",
+      htmlContent: "<!doctype html><html><body>review</body></html>",
+    });
+
+    try {
+      const payload = await fetch(`${server.url}/api/diff`).then((r) => r.json()) as {
+        base?: string;
+        gitContext?: { defaultBranch: string };
+      };
+      // The server must echo the caller's override, not the detected default.
+      expect(payload.base).toBe("develop");
+      expect(payload.gitContext?.defaultBranch).toBe("main");
+
+      await fetch(`${server.url}/api/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved: false, feedback: "done", annotations: [] }),
       });
       await server.waitForDecision();
     } finally {

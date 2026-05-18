@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import type { Origin } from '@plannotator/shared/agents';
 import { configStore, useConfigValue } from '../config';
 import { loadDiffFont } from '../utils/diffFonts';
+import { getApiUrl } from '../utils/apiUrl';
 import { TaterSpritePullup } from './TaterSpritePullup';
 import { getIdentity, regenerateIdentity, setCustomIdentity } from '../utils/identity';
 import { GitUser } from '../icons/GitUser';
@@ -122,6 +123,11 @@ const LINE_DIFF_OPTIONS = [
   { value: 'char' as const, label: 'Char' },
   { value: 'none' as const, label: 'None' },
 ];
+const DEFAULT_DIFF_TYPE_OPTIONS = [
+  { value: 'uncommitted' as const, label: 'All Changes' },
+  { value: 'unstaged' as const, label: 'Unstaged' },
+  { value: 'staged' as const, label: 'Staged' },
+];
 
 function SegmentedControl<T extends string>({ options, value, onChange }: {
   options: { value: T; label: string }[];
@@ -178,6 +184,7 @@ function ToggleSwitch({ checked, onChange, label, description }: {
 }
 
 const ReviewDisplayTab: React.FC = () => {
+  const defaultDiffType = useConfigValue('defaultDiffType');
   const diffStyle = useConfigValue('diffStyle');
   const diffOverflow = useConfigValue('diffOverflow');
   const diffIndicators = useConfigValue('diffIndicators');
@@ -194,6 +201,17 @@ const ReviewDisplayTab: React.FC = () => {
 
   return (
     <>
+      {/* Default Diff View */}
+      <div className="space-y-2">
+        <div>
+          <div className="text-sm font-medium">Default Diff View</div>
+          <div className="text-xs text-muted-foreground">Which changes to show when opening a review</div>
+        </div>
+        <SegmentedControl options={DEFAULT_DIFF_TYPE_OPTIONS} value={defaultDiffType} onChange={(v) => configStore.set('defaultDiffType', v)} />
+      </div>
+
+      <div className="border-t border-border" />
+
       {/* Font Family */}
       <div className="space-y-2">
         <div>
@@ -650,7 +668,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   useEffect(() => {
     if (obsidian.enabled && detectedVaults.length === 0 && !vaultsLoading) {
       setVaultsLoading(true);
-      fetch('/api/obsidian/vaults')
+      fetch(getApiUrl('/api/obsidian/vaults'))
         .then(res => res.json())
         .then((data: { vaults: string[] }) => {
           setDetectedVaults(data.vaults || []);

@@ -1,0 +1,11 @@
+# Universal excludes — never index these
+node_modules/
+dist/
+.cache/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+*.log
+.DS_Store
+

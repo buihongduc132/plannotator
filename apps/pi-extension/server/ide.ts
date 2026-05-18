@@ -11,6 +11,7 @@ export function openEditorDiff(
 	newPath: string,
 ): Promise<{ ok: true } | { error: string }> {
 	return new Promise((resolve) => {
+		let settled = false;
 		const proc = spawn("code", ["--diff", oldPath, newPath], {
 			stdio: ["ignore", "ignore", "pipe"],
 		});
@@ -19,6 +20,8 @@ export function openEditorDiff(
 			stderr += chunk.toString();
 		});
 		proc.on("error", (err) => {
+			if (settled) return;
+			settled = true;
 			if (err.message.includes("ENOENT")) {
 				resolve({
 					error:
@@ -29,6 +32,8 @@ export function openEditorDiff(
 			}
 		});
 		proc.on("close", (code) => {
+			if (settled) return;
+			settled = true;
 			if (code !== 0) {
 				if (stderr.includes("not found") || stderr.includes("ENOENT")) {
 					resolve({

@@ -1,6 +1,7 @@
 export {
   getPlanDir,
   generateSlug,
+  sanitizeCwd,
   savePlan,
   saveAnnotations,
   saveFinalSnapshot,
@@ -10,8 +11,10 @@ export {
   getPlanVersionPath,
   getVersionCount,
   listVersions,
+  listProjectPlans,
   parseArchiveFilename,
   listArchivedPlans,
   readArchivedPlan,
   type ArchivedPlan,
+  type SessionScope,
 } from "@plannotator/shared/storage";

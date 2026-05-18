@@ -1,7 +1,6 @@
 import { execSync, spawnSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
-import os from "node:os";
 
 import { Readable } from "node:stream";
 
@@ -45,7 +44,7 @@ import {
 	handleImageRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { html, json, parseBody, requestUrl, toWebRequest } from "./helpers.js";
+import { detectWSL, html, json, parseBody, requestUrl, toWebRequest } from "./helpers.js";
 
 import { isRemoteSession, listenOnPort } from "./network.js";
 import {
@@ -72,18 +71,6 @@ import {
 	transformClaudeFindings,
 } from "../generated/claude-review.js";
 
-/** Detect if running inside WSL (Windows Subsystem for Linux) */
-function detectWSL(): boolean {
-	if (process.platform !== "linux") return false;
-	if (os.release().toLowerCase().includes("microsoft")) return true;
-	try {
-		if (existsSync("/proc/version")) {
-			const content = readFileSync("/proc/version", "utf-8").toLowerCase();
-			return content.includes("wsl") || content.includes("microsoft");
-		}
-	} catch { /* ignore */ }
-	return false;
-}
 
 export interface ReviewServerResult {
 	port: number;
@@ -147,16 +134,16 @@ export async function startReviewServer(options: {
 	error?: string;
 	sharingEnabled?: boolean;
 	shareBaseUrl?: string;
+	pasteApiUrl?: string;
 	prMetadata?: PRMetadata;
-	/** Working directory for agent processes (e.g., --local worktree). Independent of diff pipeline. */
 	agentCwd?: string;
-	/** Cleanup callback invoked when server stops (e.g., remove temp worktree) */
 	onCleanup?: () => void | Promise<void>;
-	/** Called when server starts with the URL, remote status, and port */
 	onReady?: (url: string, isRemote: boolean, port: number) => void;
+	sessionId?: string;
+	initialBase?: string;
 }): Promise<ReviewServerResult> {
 	const gitUser = detectGitUser();
-	const draftKey = contentHash(options.rawPatch);
+	const draftKey = contentHash(`${options.rawPatch}:${options.sessionId ?? "default"}`);
 	const prMeta = options.prMetadata;
 	const isPRMode = !!prMeta;
 	const hasLocalAccess = !!options.gitContext;
@@ -164,8 +151,13 @@ export async function startReviewServer(options: {
 	const wslFlag = detectWSL();
 	const prRef = prMeta ? prRefFromMetadata(prMeta) : null;
 	const platformUser = prRef ? await getPRUser(prRef) : null;
+	const sessionId = options.sessionId;
+	const parseSessionPath = (pathname: string): { sessionId: string | null; apiPath: string } => {
+		const match = /^\/s\/([^/]+)(\/api\/.*)$/.exec(pathname);
+		if (match) return { sessionId: match[1], apiPath: match[2] };
+		return { sessionId: null, apiPath: pathname };
+	};
 
-	// Fetch GitHub viewed file state (non-blocking — errors are silently ignored)
 	let initialViewedFiles: string[] = [];
 	if (isPRMode && prRef) {
 		try {
@@ -173,9 +165,7 @@ export async function startReviewServer(options: {
 			initialViewedFiles = Object.entries(viewedMap)
 				.filter(([, isViewed]) => isViewed)
 				.map(([path]) => path);
-		} catch {
-			// Non-fatal: viewed state is best-effort
-		}
+		} catch {}
 	}
 	const repoInfo = prMeta
 		? {
@@ -190,10 +180,9 @@ export async function startReviewServer(options: {
 	let currentGitRef = options.gitRef;
 	let currentDiffType: DiffType = options.diffType || "uncommitted";
 	let currentError = options.error;
+	let currentBase = options.initialBase || options.gitContext?.defaultBranch || "main";
 
-	// Agent jobs — background process manager (late-binds serverUrl via getter)
 	let serverUrl = "";
-	// Worktree-aware cwd resolver — shared by getCwd, buildCommand, and onJobComplete
 	function resolveAgentCwd(): string {
 		if (options.agentCwd) return options.agentCwd;
 		if (currentDiffType.startsWith("worktree:")) {
@@ -213,7 +202,7 @@ export async function startReviewServer(options: {
 			const userMessage = buildCodexReviewUserMessage(
 				currentPatch,
 				currentDiffType,
-				{ defaultBranch: options.gitContext?.defaultBranch, hasLocalAccess: hasAgentLocalAccess },
+				{ defaultBranch: currentBase, hasLocalAccess: hasAgentLocalAccess },
 				options.prMetadata,
 			);
 
@@ -240,8 +229,6 @@ export async function startReviewServer(options: {
 				const output = await parseCodexOutput(meta.outputPath);
 				if (!output) return;
 
-				// Override verdict if there are blocking findings (P0/P1) — Codex's
-				// freeform correctness string can say "mostly correct" with real bugs.
 				const hasBlockingFindings = output.findings.some((f: any) => f.priority !== null && f.priority <= 1);
 				job.summary = {
 					correctness: hasBlockingFindings ? "Issues Found" : output.overall_correctness,
@@ -281,6 +268,8 @@ export async function startReviewServer(options: {
 		options.sharingEnabled ?? process.env.PLANNOTATOR_SHARE !== "disabled";
 	const shareBaseUrl =
 		(options.shareBaseUrl ?? process.env.PLANNOTATOR_SHARE_URL) || undefined;
+	const pasteApiUrl =
+		(options.pasteApiUrl ?? process.env.PLANNOTATOR_PASTE_URL) || undefined;
 	let resolveDecision!: (result: {
 		approved: boolean;
 		feedback: string;
@@ -298,18 +287,13 @@ export async function startReviewServer(options: {
 		resolveDecision = r;
 	});
 
-	// AI provider setup (graceful — AI features degrade if SDK unavailable)
-	// Types are `any` because @plannotator/ai is a dynamic import
-	let aiEndpoints: Record<string, (req: Request) => Promise<Response>> | null =
-		null;
+	let aiEndpoints: Record<string, (req: Request) => Promise<Response>> | null = null;
 	let aiSessionManager: { disposeAll: () => void } | null = null;
 	let aiRegistry: { disposeAll: () => void } | null = null;
 	try {
 		const ai = await import("../generated/ai/index.js");
 		const registry = new ai.ProviderRegistry();
 		const sessionManager = new ai.SessionManager();
-
-		// which() helper for Node.js
 		const whichCmd = (cmd: string): string | null => {
 			try {
 				return (
@@ -323,9 +307,7 @@ export async function startReviewServer(options: {
 			}
 		};
 
-		// Claude Agent SDK
 		try {
-			// @ts-ignore — dynamic import; Bun-only types resolved at runtime
 			await import("../generated/ai/providers/claude-agent-sdk.js");
 			const claudePath = whichCmd("claude");
 			const provider = await ai.createProvider({
@@ -334,13 +316,9 @@ export async function startReviewServer(options: {
 				...(claudePath && { claudeExecutablePath: claudePath }),
 			});
 			registry.register(provider);
-		} catch {
-			/* Claude SDK not available */
-		}
+		} catch {}
 
-		// Codex SDK
 		try {
-			// @ts-ignore — dynamic import; Bun-only types resolved at runtime
 			await import("../generated/ai/providers/codex-sdk.js");
 			await import("@openai/codex-sdk");
 			const codexPath = whichCmd("codex");
@@ -350,11 +328,8 @@ export async function startReviewServer(options: {
 				...(codexPath && { codexExecutablePath: codexPath }),
 			});
 			registry.register(provider);
-		} catch {
-			/* Codex SDK not available */
-		}
+		} catch {}
 
-		// Pi SDK (Node.js variant)
 		try {
 			await import("../generated/ai/providers/pi-sdk-node.js");
 			const piPath = whichCmd("pi");
@@ -365,19 +340,13 @@ export async function startReviewServer(options: {
 					piExecutablePath: piPath,
 				} as any);
 				if (provider && "fetchModels" in provider) {
-					await (
-						provider as { fetchModels: () => Promise<void> }
-					).fetchModels();
+					await (provider as { fetchModels: () => Promise<void> }).fetchModels();
 				}
 				registry.register(provider);
 			}
-		} catch {
-			/* Pi not available */
-		}
+		} catch {}
 
-		// OpenCode SDK
 		try {
-			// @ts-ignore — dynamic import; Bun-only types resolved at runtime
 			await import("../generated/ai/providers/opencode-sdk.js");
 			const opencodePath = whichCmd("opencode");
 			if (opencodePath) {
@@ -386,15 +355,11 @@ export async function startReviewServer(options: {
 					cwd: process.cwd(),
 				});
 				if (provider && "fetchModels" in provider) {
-					await (
-						provider as { fetchModels: () => Promise<void> }
-					).fetchModels();
+					await (provider as { fetchModels: () => Promise<void> }).fetchModels();
 				}
 				registry.register(provider);
 			}
-		} catch {
-			/* OpenCode not available */
-		}
+		} catch {}
 
 		if (registry.size > 0) {
 			aiEndpoints = ai.createAIEndpoints({
@@ -405,31 +370,64 @@ export async function startReviewServer(options: {
 			aiSessionManager = sessionManager;
 			aiRegistry = registry;
 		}
-	} catch {
-		/* AI backbone not available */
-	}
+	} catch {}
 
+	let port = 0;
 	const server = createServer(async (req, res) => {
 		const url = requestUrl(req);
+		const { sessionId: routeSessionId, apiPath } = sessionId
+			? parseSessionPath(url.pathname)
+			: { sessionId: null, apiPath: url.pathname };
 
-		if (url.pathname === "/api/diff" && req.method === "GET") {
+		if (sessionId && routeSessionId && routeSessionId !== sessionId) {
+			json(
+				res,
+				{
+					error: "Session mismatch",
+					message: `URL session "${routeSessionId}" does not match expected "${sessionId}"`,
+				},
+				403,
+			);
+			return;
+		}
+
+		if (apiPath === "/api/diff" && req.method === "GET") {
 			json(res, {
 				rawPatch: currentPatch,
 				gitRef: currentGitRef,
 				origin: options.origin ?? "pi",
 				diffType: hasLocalAccess ? currentDiffType : undefined,
+				base: hasLocalAccess ? currentBase : undefined,
 				gitContext: hasLocalAccess ? options.gitContext : undefined,
 				sharingEnabled,
 				shareBaseUrl,
+				pasteApiUrl,
 				repoInfo,
 				isWSL: wslFlag,
+				sessionId,
 				...(options.agentCwd && { agentCwd: options.agentCwd }),
 				...(isPRMode && { prMetadata: prMeta, platformUser }),
 				...(isPRMode && initialViewedFiles.length > 0 && { viewedFiles: initialViewedFiles }),
 				...(currentError && { error: currentError }),
 				serverConfig: getServerConfig(gitUser),
 			});
-		} else if (url.pathname === "/api/diff/switch" && req.method === "POST") {
+		} else if (apiPath === "/api/sessions" && req.method === "GET") {
+			json(res, {
+				sessions: [
+					{
+						sessionId: sessionId ?? "review",
+						mode: "review",
+						origin: options.origin ?? "pi",
+						project: repoInfo?.display ?? "Unknown",
+						slug: currentGitRef,
+						name: repoInfo ? `${repoInfo.display} (${currentGitRef})` : "Code Review",
+						cwd: resolveAgentCwd(),
+						url: sessionId ? `${serverUrl}/s/${sessionId}` : serverUrl,
+					},
+				],
+				count: 1,
+			});
+		} else if (apiPath === "/api/diff/switch" && req.method === "POST") {
 			if (!hasLocalAccess) {
 				json(res, { error: "Not available without local file access" }, 400);
 				return;
@@ -441,24 +439,27 @@ export async function startReviewServer(options: {
 					json(res, { error: "Missing diffType" }, 400);
 					return;
 				}
-				const defaultBranch = options.gitContext?.defaultBranch || "main";
+				const requestedBase = typeof body.base === "string" ? body.base : undefined;
+				const base = requestedBase || currentBase;
 				const defaultCwd = options.gitContext?.cwd;
-				const result = await runGitDiff(newType, defaultBranch, defaultCwd);
+				const result = await runGitDiff(newType, base, defaultCwd);
 				currentPatch = result.patch;
 				currentGitRef = result.label;
 				currentDiffType = newType;
+				currentBase = base;
 				currentError = result.error;
 				json(res, {
 					rawPatch: currentPatch,
 					gitRef: currentGitRef,
 					diffType: currentDiffType,
+					base: currentBase,
 					...(currentError ? { error: currentError } : {}),
 				});
 			} catch (err) {
 				const message = err instanceof Error ? err.message : "Failed to switch diff";
 				json(res, { error: message }, 500);
 			}
-		} else if (url.pathname === "/api/pr-context" && req.method === "GET") {
+		} else if (apiPath === "/api/pr-context" && req.method === "GET") {
 			if (!isPRMode || !prRef) {
 				json(res, { error: "Not in PR mode" }, 400);
 				return;
@@ -470,13 +471,12 @@ export async function startReviewServer(options: {
 				json(
 					res,
 					{
-						error:
-							err instanceof Error ? err.message : "Failed to fetch PR context",
+						error: err instanceof Error ? err.message : "Failed to fetch PR context",
 					},
 					500,
 				);
 			}
-		} else if (url.pathname === "/api/pr-action" && req.method === "POST") {
+		} else if (apiPath === "/api/pr-action" && req.method === "POST") {
 			if (!isPRMode || !prMeta || !prRef) {
 				json(res, { error: "Not in PR mode" }, 400);
 				return;
@@ -484,7 +484,6 @@ export async function startReviewServer(options: {
 			try {
 				const body = await parseBody(req);
 				const fileComments = (body.fileComments as PRReviewFileComment[]) || [];
-				console.error(`[pr-action] ${body.action} with ${fileComments.length} file comment(s), headSha=${prMeta.headSha}`);
 				await submitPRReview(
 					prRef,
 					prMeta.headSha,
@@ -492,14 +491,12 @@ export async function startReviewServer(options: {
 					body.body as string,
 					fileComments,
 				);
-				console.error(`[pr-action] Success`);
 				json(res, { ok: true, prUrl: prMeta.url });
 			} catch (err) {
 				const message = err instanceof Error ? err.message : "Failed to submit PR review";
-				console.error(`[pr-action] Failed: ${message}`);
 				json(res, { error: message }, 500);
 			}
-		} else if (url.pathname === "/api/pr-viewed" && req.method === "POST") {
+		} else if (apiPath === "/api/pr-viewed" && req.method === "POST") {
 			if (!isPRMode || !prMeta || !prRef) {
 				json(res, { error: "Not in PR mode" }, 400);
 				return;
@@ -524,10 +521,9 @@ export async function startReviewServer(options: {
 				json(res, { ok: true });
 			} catch (err) {
 				const message = err instanceof Error ? err.message : "Failed to update viewed state";
-				console.error("[plannotator] /api/pr-viewed error:", message);
 				json(res, { error: message }, 500);
 			}
-		} else if (url.pathname === "/api/file-content" && req.method === "GET") {
+		} else if (apiPath === "/api/file-content" && req.method === "GET") {
 			const filePath = url.searchParams.get("path");
 			if (!filePath) {
 				json(res, { error: "Missing path" }, 400);
@@ -549,14 +545,12 @@ export async function startReviewServer(options: {
 				}
 			}
 
-			// Local mode first (matches Bun server priority)
 			if (hasLocalAccess && !isPRMode) {
-				const defaultBranch = options.gitContext?.defaultBranch || "main";
 				const defaultCwd = options.gitContext?.cwd;
 				const result = await getFileContentsForDiffCore(
 					reviewRuntime,
 					currentDiffType,
-					defaultBranch,
+					currentBase,
 					filePath,
 					oldPath,
 					defaultCwd,
@@ -565,7 +559,6 @@ export async function startReviewServer(options: {
 				return;
 			}
 
-			// PR mode: fetch from platform API using merge-base/head SHAs
 			if (isPRMode && prRef && prMeta) {
 				try {
 					const oldSha = prMeta.mergeBaseSha ?? prMeta.baseSha;
@@ -578,10 +571,7 @@ export async function startReviewServer(options: {
 					json(
 						res,
 						{
-							error:
-								err instanceof Error
-									? err.message
-									: "Failed to fetch file content",
+							error: err instanceof Error ? err.message : "Failed to fetch file content",
 						},
 						500,
 					);
@@ -590,27 +580,26 @@ export async function startReviewServer(options: {
 			}
 
 			json(res, { error: "No file access available" }, 400);
-		} else if (url.pathname === "/api/config" && req.method === "POST") {
+		} else if (apiPath === "/api/config" && req.method === "POST") {
 			try {
-				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean };
+				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
 				const toSave: Record<string, unknown> = {};
 				if (body.displayName !== undefined) toSave.displayName = body.displayName;
 				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
+				if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
 				if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
 				json(res, { ok: true });
 			} catch {
 				json(res, { error: "Invalid request" }, 400);
 			}
-		} else if (url.pathname === "/api/image") {
+		} else if (apiPath === "/api/image") {
 			handleImageRequest(res, url);
-		} else if (url.pathname === "/api/upload" && req.method === "POST") {
+		} else if (apiPath === "/api/upload" && req.method === "POST") {
 			await handleUploadRequest(req, res);
-		} else if (url.pathname === "/api/agents" && req.method === "GET") {
+		} else if (apiPath === "/api/agents" && req.method === "GET") {
 			json(res, { agents: [] });
-		} else if (url.pathname === "/api/git-add" && req.method === "POST") {
-			// Staging only available for local diff types that support it (not PR mode, not branch diffs).
-			// Worktree diff types use composite format "worktree:/path:uncommitted" — extract the base type.
+		} else if (apiPath === "/api/git-add" && req.method === "POST") {
 			const baseDiffType = currentDiffType.startsWith("worktree:")
 				? (parseWorktreeDiffType(currentDiffType)?.subType ?? currentDiffType)
 				: currentDiffType;
@@ -641,13 +630,17 @@ export async function startReviewServer(options: {
 				}
 				json(res, { ok: true });
 			} catch (err) {
-				const message =
-					err instanceof Error ? err.message : "Failed to stage file";
+				const message = err instanceof Error ? err.message : "Failed to stage file";
 				json(res, { error: message }, 500);
 			}
-		} else if (url.pathname === "/api/draft") {
-			await handleDraftRequest(req, res, draftKey);
-		} else if (url.pathname === "/favicon.svg") {
+		} else if (apiPath === "/api/draft") {
+			await handleDraftRequest(
+				req,
+				res,
+				draftKey,
+				sessionId ? { sessionId, cwd: resolveAgentCwd() } : undefined,
+			);
+		} else if (apiPath === "/favicon.svg" || url.pathname === "/favicon.svg") {
 			handleFavicon(res);
 		} else if (await editorAnnotations.handle(req, res, url)) {
 			return;
@@ -655,13 +648,12 @@ export async function startReviewServer(options: {
 			return;
 		} else if (await agentJobs.handle(req, res, url)) {
 			return;
-		} else if (aiEndpoints && url.pathname.startsWith("/api/ai/")) {
-			const handler = aiEndpoints[url.pathname];
+		} else if (aiEndpoints && apiPath.startsWith("/api/ai/")) {
+			const handler = aiEndpoints[apiPath];
 			if (handler) {
 				try {
 					const webReq = toWebRequest(req);
 					const webRes = await handler(webReq);
-					// Pipe Web Response → node:http response
 					const headers: Record<string, string> = {};
 					webRes.headers.forEach((v, k) => {
 						headers[k] = v;
@@ -683,14 +675,14 @@ export async function startReviewServer(options: {
 				return;
 			}
 			json(res, { error: "Not found" }, 404);
-		} else if (url.pathname === "/api/exit" && req.method === "POST") {
-			deleteDraft(draftKey);
-			resolveDecision({ approved: false, feedback: '', annotations: [], exit: true });
+		} else if (apiPath === "/api/exit" && req.method === "POST") {
+			deleteDraft(draftKey, sessionId ? { sessionId, cwd: resolveAgentCwd() } : undefined);
+			resolveDecision({ approved: false, feedback: "", annotations: [], exit: true });
 			json(res, { ok: true });
-		} else if (url.pathname === "/api/feedback" && req.method === "POST") {
+		} else if (apiPath === "/api/feedback" && req.method === "POST") {
 			try {
 				const body = await parseBody(req);
-				deleteDraft(draftKey);
+				deleteDraft(draftKey, sessionId ? { sessionId, cwd: resolveAgentCwd() } : undefined);
 				resolveDecision({
 					approved: (body.approved as boolean) ?? false,
 					feedback: (body.feedback as string) || "",
@@ -702,13 +694,16 @@ export async function startReviewServer(options: {
 				const message = err instanceof Error ? err.message : "Failed to process feedback";
 				json(res, { error: message }, 500);
 			}
+		} else if (apiPath.startsWith("/api/")) {
+			json(res, { error: "Not found", path: apiPath }, 404);
 		} else {
 			html(res, options.htmlContent);
 		}
 	});
 
-	const { port, portSource } = await listenOnPort(server);
-	serverUrl = `http://localhost:${port}`;
+	const { port: boundPort, portSource, url: listenUrl } = await listenOnPort(server);
+	port = boundPort;
+	serverUrl = sessionId ? `${listenUrl}/s/${sessionId}` : listenUrl;
 	const exitHandler = () => agentJobs.killAll();
 	process.once("exit", exitHandler);
 
@@ -728,12 +723,11 @@ export async function startReviewServer(options: {
 			aiSessionManager?.disposeAll();
 			aiRegistry?.disposeAll();
 			server.close();
-			// Invoke cleanup callback (e.g., remove temp worktree)
 			if (options.onCleanup) {
 				try {
 					const result = options.onCleanup();
 					if (result instanceof Promise) result.catch(() => {});
-				} catch { /* best effort */ }
+				} catch {}
 			}
 		},
 	};

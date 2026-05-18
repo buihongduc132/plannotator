@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { EditorAnnotation } from '../types';
+import { getApiUrl } from '../utils/apiUrl';
 
 const POLL_INTERVAL = 500;
 const IS_VSCODE = typeof window !== 'undefined' && (window as any).__PLANNOTATOR_VSCODE === true;
@@ -22,7 +23,7 @@ export function useEditorAnnotations(): UseEditorAnnotationsReturn {
 
   const fetchAnnotations = useCallback(async () => {
     try {
-      const res = await fetch('/api/editor-annotations');
+      const res = await fetch(getApiUrl('/api/editor-annotations'));
       if (!res.ok) return;
       const data = await res.json();
       const incoming: EditorAnnotation[] = data.annotations ?? [];
@@ -53,7 +54,7 @@ export function useEditorAnnotations(): UseEditorAnnotationsReturn {
   const deleteEditorAnnotation = useCallback(async (id: string) => {
     if (!IS_VSCODE) return;
     try {
-      await fetch(`/api/editor-annotation?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await fetch(getApiUrl(`/api/editor-annotation?id=${encodeURIComponent(id)}`), { method: 'DELETE' });
       setAnnotations((prev) => prev.filter((a) => a.id !== id));
     } catch {
       // Silently fail — next poll will reconcile

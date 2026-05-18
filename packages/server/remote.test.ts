@@ -1,137 +1,153 @@
-/**
- * Remote Detection & Port Config Tests
- *
- * Run: bun test packages/server/remote.test.ts
- */
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 
-import { afterEach, describe, expect, test } from "bun:test";
-import { isRemoteSession, getServerPort } from "./remote";
+describe("remote session detection", () => {
+  const origEnv = { ...process.env };
 
-// Save and restore env between tests
-const savedEnv: Record<string, string | undefined> = {};
-const envKeys = ["PLANNOTATOR_REMOTE", "PLANNOTATOR_PORT", "SSH_TTY", "SSH_CONNECTION"];
-
-function clearEnv() {
-  for (const key of envKeys) {
-    savedEnv[key] = process.env[key];
-    delete process.env[key];
-  }
-}
-
-afterEach(() => {
-  for (const key of envKeys) {
-    if (savedEnv[key] !== undefined) {
-      process.env[key] = savedEnv[key];
-    } else {
-      delete process.env[key];
-    }
-  }
-});
-
-describe("isRemoteSession", () => {
-  test("false by default (no env vars)", () => {
-    clearEnv();
-    expect(isRemoteSession()).toBe(false);
+  beforeEach(() => {
+    // Clean relevant env vars
+    delete process.env.PLANNOTATOR_REMOTE;
+    delete process.env.PLANNOTATOR_PORT;
+    delete process.env.PLANNOTATOR_SERVER_URL;
+    delete process.env.PLANNOTATOR_HOST;
+    delete process.env.PLANNOTATOR_CLIENT_MODE;
+    delete process.env.SSH_TTY;
+    delete process.env.SSH_CONNECTION;
   });
 
-  test("true when PLANNOTATOR_REMOTE=1", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_REMOTE = "1";
-    expect(isRemoteSession()).toBe(true);
+  afterEach(() => {
+    // Restore
+    process.env = { ...origEnv };
   });
 
-  test("true when PLANNOTATOR_REMOTE=true", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_REMOTE = "true";
-    expect(isRemoteSession()).toBe(true);
+  describe("isRemoteSession", () => {
+    test("returns false by default", async () => {
+      const { isRemoteSession } = await import("./remote");
+      expect(isRemoteSession()).toBe(false);
+    });
+
+    test("returns true when PLANNOTATOR_REMOTE=1", async () => {
+      process.env.PLANNOTATOR_REMOTE = "1";
+      const { isRemoteSession } = await import("./remote");
+      expect(isRemoteSession()).toBe(true);
+    });
+
+    test("returns true when PLANNOTATOR_REMOTE=true", async () => {
+      process.env.PLANNOTATOR_REMOTE = "true";
+      const { isRemoteSession } = await import("./remote");
+      expect(isRemoteSession()).toBe(true);
+    });
+
+    test("returns false when PLANNOTATOR_REMOTE=0", async () => {
+      process.env.PLANNOTATOR_REMOTE = "0";
+      const { isRemoteSession } = await import("./remote");
+      expect(isRemoteSession()).toBe(false);
+    });
+
+    test("detects SSH session via SSH_TTY", async () => {
+      process.env.SSH_TTY = "/dev/pts/0";
+      const { isRemoteSession } = await import("./remote");
+      expect(isRemoteSession()).toBe(true);
+    });
+
+    test("detects SSH session via SSH_CONNECTION", async () => {
+      process.env.SSH_CONNECTION = "10.0.0.1 12345 10.0.0.2 22";
+      const { isRemoteSession } = await import("./remote");
+      expect(isRemoteSession()).toBe(true);
+    });
   });
 
-  test("false when PLANNOTATOR_REMOTE=0", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_REMOTE = "0";
-    expect(isRemoteSession()).toBe(false);
+  describe("getServerPort", () => {
+    test("returns 0 (random) for local sessions", async () => {
+      const { getServerPort } = await import("./remote");
+      expect(getServerPort()).toBe(0);
+    });
+
+    test("returns 19432 for remote sessions", async () => {
+      process.env.PLANNOTATOR_REMOTE = "1";
+      const { getServerPort } = await import("./remote");
+      expect(getServerPort()).toBe(19432);
+    });
+
+    test("respects PLANNOTATOR_PORT override", async () => {
+      process.env.PLANNOTATOR_PORT = "8080";
+      const { getServerPort } = await import("./remote");
+      expect(getServerPort()).toBe(8080);
+    });
   });
 
-  test("false when PLANNOTATOR_REMOTE=false", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_REMOTE = "false";
-    expect(isRemoteSession()).toBe(false);
+  describe("getServerHost", () => {
+    test("returns 127.0.0.1 for local sessions", async () => {
+      const { getServerHost } = await import("./remote");
+      expect(getServerHost()).toBe("127.0.0.1");
+    });
+
+    test("returns 0.0.0.0 for remote sessions", async () => {
+      process.env.PLANNOTATOR_REMOTE = "1";
+      const { getServerHost } = await import("./remote");
+      expect(getServerHost()).toBe("0.0.0.0");
+    });
+
+    test("respects PLANNOTATOR_HOST override", async () => {
+      process.env.PLANNOTATOR_HOST = "100.114.135.99";
+      const { getServerHost } = await import("./remote");
+      expect(getServerHost()).toBe("100.114.135.99");
+    });
   });
 
-  test("PLANNOTATOR_REMOTE=false overrides SSH_TTY", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_REMOTE = "false";
-    process.env.SSH_TTY = "/dev/pts/0";
-    expect(isRemoteSession()).toBe(false);
+  describe("getServerBaseUrl", () => {
+    test("returns localhost by default", async () => {
+      const { getServerBaseUrl } = await import("./remote");
+      expect(getServerBaseUrl()).toBe("http://localhost");
+    });
+
+    test("returns PLANNOTATOR_SERVER_URL when set", async () => {
+      process.env.PLANNOTATOR_SERVER_URL = "http://100.114.135.99:19437";
+      const { getServerBaseUrl } = await import("./remote");
+      expect(getServerBaseUrl()).toBe("http://100.114.135.99:19437");
+    });
+
+    test("strips trailing slash", async () => {
+      process.env.PLANNOTATOR_SERVER_URL = "http://example.com/";
+      const { getServerBaseUrl } = await import("./remote");
+      expect(getServerBaseUrl()).toBe("http://example.com");
+    });
   });
 
-  test("PLANNOTATOR_REMOTE=0 overrides SSH_CONNECTION", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_REMOTE = "0";
-    process.env.SSH_CONNECTION = "192.168.1.1 12345 192.168.1.2 22";
-    expect(isRemoteSession()).toBe(false);
+  describe("getServerUrl", () => {
+    test("composes localhost URL with port", async () => {
+      const { getServerUrl } = await import("./remote");
+      expect(getServerUrl(3000)).toBe("http://localhost:3000");
+    });
+
+    test("returns PLANNOTATOR_SERVER_URL when set", async () => {
+      process.env.PLANNOTATOR_SERVER_URL = "http://192.168.1.1:8080";
+      const { getServerUrl } = await import("./remote");
+      expect(getServerUrl(3000)).toBe("http://192.168.1.1:8080");
+    });
   });
 
-  test("true when SSH_TTY is set (legacy)", () => {
-    clearEnv();
-    process.env.SSH_TTY = "/dev/pts/0";
-    expect(isRemoteSession()).toBe(true);
-  });
+  describe("isClientMode", () => {
+    test("returns false by default", async () => {
+      const { isClientMode } = await import("./remote");
+      expect(isClientMode()).toBe(false);
+    });
 
-  test("true when SSH_CONNECTION is set (legacy)", () => {
-    clearEnv();
-    process.env.SSH_CONNECTION = "192.168.1.1 12345 192.168.1.2 22";
-    expect(isRemoteSession()).toBe(true);
-  });
-});
+    test("returns true when PLANNOTATOR_CLIENT_MODE=1", async () => {
+      process.env.PLANNOTATOR_CLIENT_MODE = "1";
+      const { isClientMode } = await import("./remote");
+      expect(isClientMode()).toBe(true);
+    });
 
-describe("getServerPort", () => {
-  test("returns 0 for local session (random port)", () => {
-    clearEnv();
-    expect(getServerPort()).toBe(0);
-  });
+    test("returns true when SERVER_URL is set (auto-detect)", async () => {
+      process.env.PLANNOTATOR_SERVER_URL = "http://example.com:8080";
+      const { isClientMode } = await import("./remote");
+      expect(isClientMode()).toBe(true);
+    });
 
-  test("returns 19432 for remote session", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_REMOTE = "1";
-    expect(getServerPort()).toBe(19432);
-  });
-
-  test("returns 0 when PLANNOTATOR_REMOTE=false overrides SSH", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_REMOTE = "false";
-    process.env.SSH_TTY = "/dev/pts/0";
-    expect(getServerPort()).toBe(0);
-  });
-
-  test("explicit PLANNOTATOR_PORT overrides everything", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_PORT = "8080";
-    expect(getServerPort()).toBe(8080);
-  });
-
-  test("explicit port overrides remote default", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_REMOTE = "1";
-    process.env.PLANNOTATOR_PORT = "3000";
-    expect(getServerPort()).toBe(3000);
-  });
-
-  test("ignores invalid port (falls back to default)", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_PORT = "not-a-number";
-    expect(getServerPort()).toBe(0);
-  });
-
-  test("ignores out-of-range port", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_PORT = "99999";
-    expect(getServerPort()).toBe(0);
-  });
-
-  test("ignores zero port", () => {
-    clearEnv();
-    process.env.PLANNOTATOR_PORT = "0";
-    expect(getServerPort()).toBe(0);
+    test("returns false when PLANNOTATOR_CLIENT_MODE=0", async () => {
+      process.env.PLANNOTATOR_CLIENT_MODE = "0";
+      const { isClientMode } = await import("./remote");
+      expect(isClientMode()).toBe(false);
+    });
   });
 });

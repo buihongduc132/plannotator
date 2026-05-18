@@ -9,6 +9,7 @@ import type { IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { saveDraft, loadDraft, deleteDraft } from "../generated/draft.js";
+import type { SessionScope } from "../generated/storage.js";
 import { FAVICON_SVG } from "../generated/favicon.js";
 
 import { json, parseBody, send, toWebRequest } from "./helpers";
@@ -177,11 +178,12 @@ export function handleDraftRequest(
 	req: IncomingMessage,
 	res: Res,
 	draftKey: string,
+	scope?: SessionScope,
 ): Promise<void> | void {
 	if (req.method === "POST") {
 		return parseBody(req)
 			.then((body) => {
-				saveDraft(draftKey, body);
+				saveDraft(draftKey, body, scope);
 				json(res, { ok: true });
 			})
 			.catch((err: unknown) => {
@@ -190,10 +192,10 @@ export function handleDraftRequest(
 				json(res, { error: message }, 500);
 			});
 	} else if (req.method === "DELETE") {
-		deleteDraft(draftKey);
+		deleteDraft(draftKey, scope);
 		json(res, { ok: true });
 	} else {
-		const draft = loadDraft(draftKey);
+		const draft = loadDraft(draftKey, scope);
 		if (!draft) {
 			json(res, { found: false }, 404);
 			return;

@@ -9,6 +9,7 @@
 
 import { useState, useCallback } from "react";
 import type { VaultNode } from "../types";
+import { getApiUrl } from "../utils/apiUrl";
 
 export interface DirState {
   path: string;
@@ -65,7 +66,7 @@ export function useFileBrowser(): UseFileBrowserReturn {
 
     try {
       const res = await fetch(
-        `/api/reference/files?dirPath=${encodeURIComponent(dirPath)}`
+        getApiUrl(`/api/reference/files?dirPath=${encodeURIComponent(dirPath)}`)
       );
       const data = await res.json();
 
@@ -135,7 +136,7 @@ export function useFileBrowser(): UseFileBrowserReturn {
 
     try {
       const res = await fetch(
-        `/api/reference/obsidian/files?vaultPath=${encodeURIComponent(vaultPath)}`
+        getApiUrl(`/api/reference/obsidian/files?vaultPath=${encodeURIComponent(vaultPath)}`)
       );
       const data = await res.json();
 

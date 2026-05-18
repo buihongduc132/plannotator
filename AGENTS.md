@@ -100,10 +100,16 @@ claude --plugin-dir ./apps/hook
 |----------|-------------|
 | `PLANNOTATOR_REMOTE` | Set to `1` / `true` for remote mode, `0` / `false` for local mode, or leave unset for SSH auto-detection. Uses a fixed port in remote mode; browser-opening behavior depends on the environment. |
 | `PLANNOTATOR_PORT` | Fixed port to use. Default: random locally, `19432` for remote sessions. |
+| `PLANNOTATOR_SERVER_URL` | Full base URL for the plannotator server (e.g. `http://100.114.135.99:19437`). When set, the OpenCode plugin enters **client mode** — it connects to the running server via HTTP instead of spawning its own server. The server must be running in **plan mode** (e.g., `plannotator archive` exposes the full plan server with `/api/sessions`; `plannotator annotate` and `plannotator review` do not). |
+| `PLANNOTATOR_CLIENT_MODE` | Set to `1` to force client mode (plugin connects to running server). Set to `0` to force spawn mode (plugin starts its own server). When unset, auto-detected: if `PLANNOTATOR_SERVER_URL` is set → client mode, otherwise → spawn mode. |
 | `PLANNOTATOR_BROWSER` | Custom browser to open plans in. macOS: app name or path. Linux/Windows: executable path. |
+| `PLANNOTATOR_HOST` | Bind host override (e.g. Tailscale IP `100.x.x.x`). Default: `127.0.0.1` (local) or `0.0.0.0` (remote). When set, browser URLs use this host. |
 | `PLANNOTATOR_SHARE` | Set to `disabled` to turn off URL sharing entirely. Default: enabled. |
 | `PLANNOTATOR_SHARE_URL` | Custom base URL for share links (self-hosted portal). Default: `https://share.plannotator.ai`. |
 | `PLANNOTATOR_PASTE_URL` | Base URL of the paste service API for short URL sharing. Default: `https://plannotator-paste.plannotator.workers.dev`. |
+| `PLANNOTATOR_ORIGIN` | Explicit agent-origin override at the top of the detection chain. Valid values: `claude-code`, `opencode`, `codex`, `copilot-cli`, `gemini-cli`. Invalid values silently fall through to env-based detection. Unset by default. |
+| `PLANNOTATOR_JINA` | Set to `0` / `false` to disable Jina Reader for URL annotation, or `1` / `true` to enable. Default: enabled. Can also be set via `~/.plannotator/config.json` (`{ "jina": false }`) or per-invocation via `--no-jina`. |
+| `JINA_API_KEY` | Optional Jina Reader API key for higher rate limits (500 RPM vs 20 RPM unauthenticated). Free keys include 10M tokens. |
 | `PLANNOTATOR_VERIFY_ATTESTATION` | **Read by the install scripts only**, not by the runtime binary. Set to `1` / `true` to have `scripts/install.sh` / `install.ps1` / `install.cmd` run `gh attestation verify` on every install. Off by default. Can also be set persistently via `~/.plannotator/config.json` (`{ "verifyAttestation": true }`) or per-invocation via `--verify-attestation`. Requires `gh` installed and authenticated. |
 
 **Legacy:** `SSH_TTY` and `SSH_CONNECTION` are still detected when `PLANNOTATOR_REMOTE` is unset. Set `PLANNOTATOR_REMOTE=1` / `true` to force remote mode or `0` / `false` to force local mode.
@@ -152,16 +158,20 @@ Approve → "LGTM" sent to agent session
 ## Annotate Flow
 
 ```
-User runs /plannotator-annotate <file.md> command
+User runs /plannotator-annotate <file.md | file.html | https://... | folder/>
         ↓
 Claude Code: plannotator annotate subcommand runs
-OpenCode: event handler intercepts command
+OpenCode/Pi: event handler intercepts command
         ↓
-Markdown file read from disk
+Input type detected:
+  .md/.mdx   → file read from disk
+  .html/.htm → file read, converted to markdown via Turndown
+  https://   → fetched via Jina Reader (default) or fetch+Turndown (--no-jina)
+  folder/    → file browser opened, files converted on demand
         ↓
 Annotate server starts (reuses plan editor HTML with mode:"annotate")
         ↓
-User annotates markdown, provides feedback
+User annotates content, provides feedback
         ↓
 Send Annotations → feedback sent to agent session
 ```
@@ -216,8 +226,9 @@ During normal plan review, an Archive sidebar tab provides the same browsing via
 
 | Endpoint              | Method | Purpose                                    |
 | --------------------- | ------ | ------------------------------------------ |
-| `/api/diff`           | GET    | Returns `{ rawPatch, gitRef, origin, diffType, gitContext }` |
-| `/api/file-content`   | GET    | Returns `{ oldContent, newContent }` for expandable diff context |
+| `/api/diff`           | GET    | Returns `{ rawPatch, gitRef, origin, diffType, base, gitContext }` |
+| `/api/diff/switch`    | POST   | Switch diff type and/or base branch (body: `{ diffType, base? }`) |
+| `/api/file-content`   | GET    | Returns `{ oldContent, newContent }` for expandable diff context (`?path=&oldPath=&base=`) |
 | `/api/git-add`        | POST   | Stage/unstage a file (body: `{ filePath, undo? }`) |
 | `/api/feedback`       | POST   | Submit review (body: feedback, annotations, agentSwitch) |
 | `/api/image`          | GET    | Serve image by path query param            |
@@ -236,19 +247,23 @@ During normal plan review, an Archive sidebar tab provides the same browsing via
 | `/api/external-annotations` | POST | Add external annotations (single or batch `{ annotations: [...] }`) |
 | `/api/external-annotations` | PATCH | Update fields on a single annotation (`?id=`) |
 | `/api/external-annotations` | DELETE | Remove by `?id=`, `?source=`, or clear all |
-| `/api/agents/capabilities` | GET | Check available agent providers (claude, codex) |
+| `/api/agents/capabilities` | GET | Check available agent providers (claude, codex, tour) |
 | `/api/agents/jobs/stream` | GET | SSE stream for real-time agent job status updates |
 | `/api/agents/jobs` | GET | Snapshot of agent jobs (polling fallback, `?since=N` for version gating) |
 | `/api/agents/jobs` | POST | Launch an agent job (body: `{ provider, command, label }`) |
 | `/api/agents/jobs` | DELETE | Kill all running agent jobs |
 | `/api/agents/jobs/:id` | DELETE | Kill a specific agent job |
+| `/api/tour/:jobId` | GET | Fetch Code Tour result (greeting, stops, checklist) for a completed tour job |
+| `/api/tour/:jobId/checklist` | PUT | Persist checklist item state for a Code Tour |
 
 ### Annotate Server (`packages/server/annotate.ts`)
 
 | Endpoint              | Method | Purpose                                    |
 | --------------------- | ------ | ------------------------------------------ |
-| `/api/plan`           | GET    | Returns `{ plan, origin, mode: "annotate", filePath }` |
+| `/api/plan`           | GET    | Returns `{ plan, origin, mode: "annotate", filePath, sourceInfo?, gate }` |
 | `/api/feedback`       | POST   | Submit annotations (body: feedback, annotations) |
+| `/api/approve`        | POST   | Approve without feedback (review-gate UX, `--gate`) |
+| `/api/exit`           | POST   | Close session without feedback |
 | `/api/image`          | GET    | Serve image by path query param            |
 | `/api/upload`         | POST   | Upload image, returns `{ path, originalName }` |
 | `/api/draft`          | GET/POST/DELETE | Auto-save annotation drafts to survive server crashes |
@@ -330,10 +345,11 @@ interface Annotation {
 
 interface Block {
   id: string;
-  type: "paragraph" | "heading" | "blockquote" | "list-item" | "code" | "hr";
+  type: "paragraph" | "heading" | "blockquote" | "list-item" | "code" | "hr" | "table" | "html" | "directive";
   content: string;
   level?: number; // For headings (1-6)
   language?: string; // For code blocks
+  alertKind?: "note" | "tip" | "warning" | "caution" | "important"; // GitHub alerts (blockquote subtype)
   order: number;
   startLine: number;
 }
@@ -345,12 +361,15 @@ interface Block {
 
 `parseMarkdownToBlocks(markdown)` splits markdown into Block objects. Handles:
 
-- Headings (`#`, `##`, etc.)
+- Headings (`#`, `##`, etc.) with slug-derived anchor ids
 - Code blocks (``` with language extraction)
 - List items (`-`, `*`, `1.`)
-- Blockquotes (`>`)
+- Blockquotes (`>`) — including GitHub alerts (`> [!NOTE|TIP|WARNING|CAUTION|IMPORTANT]`) which set `alertKind`
 - Horizontal rules (`---`)
-- Paragraphs (default)
+- Tables (pipe-delimited) — rendered via `TableBlock` with a `TableToolbar` (copy as markdown/CSV) and `TablePopout` overlay
+- Raw HTML blocks (`<details>`, `<summary>`, etc.) — rendered via `HtmlBlock` through `marked` + DOMPurify
+- Directive containers (`:::kind ... :::`) — rendered via `Callout`
+- Paragraphs (default) with inline extras: bare URL autolinks, `@mentions` / `#issue-refs`, emoji shortcodes, smart punctuation
 
 `exportAnnotations(blocks, annotations, globalAttachments)` generates human-readable feedback for Claude. Images are referenced by name: `[image-name] /tmp/path...`. Annotations with `diffContext` include `[In diff content]` labels.
 
@@ -459,6 +478,29 @@ bun run --cwd apps/review build && bun run build:hook && \
 
 Running only `build:opencode` will copy stale HTML files.
 
+## Local Development with mise
+
+For OpenCode plugin development, a single `mise run opencode-dev` handles everything:
+
+```bash
+mise run opencode-dev
+```
+
+This:
+1. Builds `apps/opencode-plugin/` (copies HTML, bundles `dist/index.js`)
+2. Creates a global npm link for `@plannotator/opencode`
+3. Symlinks it into OpenCode's own `node_modules/@plannotator/opencode`
+
+After running `mise run opencode-dev`, simply restart OpenCode to pick up changes. No need to re-run the task after code changes — just rebuild via `mise run opencode-dev` again when you want to deploy the latest changes.
+
+The following environment variables are set automatically by the task:
+
+| Variable | Value |
+|---|---|
+| `PLANNOTATOR_REMOTE` | `1` |
+| `PLANNOTATOR_PORT` | `19437` |
+| `PLANNOTATOR_SERVER_URL` | `http://100.114.135.99:19437` |
+
 ## Marketing Site
 
 `apps/marketing/` is the plannotator.ai website — landing page, documentation, and blog. Built with Astro 5 (static output, zero client JS except a theme toggle island). Docs are markdown files in `src/content/docs/`, blog posts in `src/content/blog/`, both using Astro content collections. Tailwind CSS v4 via `@tailwindcss/vite`. Deploys to S3/CloudFront via GitHub Actions on push to main.
@@ -468,3 +510,47 @@ Running only `build:opencode` will copy stale HTML files.
 ```
 claude --plugin-dir ./apps/hook
 ```
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **plannotator** (11670 symbols, 18309 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/plannotator/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/plannotator/clusters` | All functional areas |
+| `gitnexus://repo/plannotator/processes` | All execution flows |
+| `gitnexus://repo/plannotator/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->

@@ -14,6 +14,8 @@ import { TableOfContents } from "../TableOfContents";
 import { VersionBrowser } from "./VersionBrowser";
 import { FileBrowser } from "./FileBrowser";
 import { ArchiveBrowser, type ArchivedPlan } from "./ArchiveBrowser";
+import { SessionBrowser } from "./SessionBrowser";
+import type { SessionEntry } from "../../hooks/useSessions";
 import { OverlayScrollArea } from "../OverlayScrollArea";
 
 interface SidebarContainerProps {
@@ -58,6 +60,11 @@ interface SidebarContainerProps {
   selectedArchiveFile: string | null;
   onArchiveSelect: (filename: string) => void;
   isLoadingArchive: boolean;
+  // Session Browser props
+  sessions: SessionEntry[];
+  isLoadingSessions: boolean;
+  onFetchSessions: () => void;
+  currentSessionId?: string | null;
 }
 
 export const SidebarContainer: React.FC<SidebarContainerProps> = ({
@@ -97,6 +104,10 @@ export const SidebarContainer: React.FC<SidebarContainerProps> = ({
   selectedArchiveFile,
   onArchiveSelect,
   isLoadingArchive,
+  sessions,
+  isLoadingSessions,
+  onFetchSessions,
+  currentSessionId,
 }) => {
   return (
     <aside
@@ -104,7 +115,7 @@ export const SidebarContainer: React.FC<SidebarContainerProps> = ({
       style={{ width }}
     >
       {/* Tab bar */}
-      <div className="flex items-center border-b border-border/50 px-1 py-1 gap-0.5 flex-shrink-0 overflow-hidden min-w-0">
+      <div className="flex flex-wrap items-center border-b border-border/50 px-1 py-1 gap-0.5 flex-shrink-0 overflow-visible min-w-0">
         <TabButton
           active={activeTab === "toc"}
           onClick={() => onTabChange("toc")}
@@ -192,6 +203,30 @@ export const SidebarContainer: React.FC<SidebarContainerProps> = ({
             label="Archive"
           />
         )}
+        <TabButton
+          active={activeTab === "sessions"}
+          onClick={() => {
+            onTabChange("sessions");
+            onFetchSessions();
+          }}
+          icon={
+            <svg
+              className="w-3 h-3"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
+              />
+            </svg>
+          }
+          label="Sessions"
+          badge={sessions.length > 1}
+        />
         <div className="flex-1 min-w-0" />
         <button
           onClick={onClose}
@@ -266,6 +301,13 @@ export const SidebarContainer: React.FC<SidebarContainerProps> = ({
             isLoading={isLoadingArchive}
           />
         )}
+        {activeTab === "sessions" && (
+          <SessionBrowser
+            sessions={sessions}
+            isLoading={isLoadingSessions}
+            currentSessionId={currentSessionId}
+          />
+        )}
       </OverlayScrollArea>
     </aside>
   );
@@ -280,7 +322,7 @@ const TabButton: React.FC<{
 }> = ({ active, onClick, icon, label, badge }) => (
   <button
     onClick={onClick}
-    className={`relative flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors min-w-0 shrink-0 ${
+    className={`relative flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors min-w-0 shrink ${
       active
         ? "bg-primary/10 text-primary"
         : "text-muted-foreground hover:text-foreground hover:bg-muted/50"

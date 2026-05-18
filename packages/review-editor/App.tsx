@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { type Origin, getAgentName } from '@plannotator/shared/agents';
 import { ThemeProvider, useTheme } from '@plannotator/ui/components/ThemeProvider';
+import { TooltipProvider } from '@plannotator/ui/components/Tooltip';
 import { ConfirmDialog } from '@plannotator/ui/components/ConfirmDialog';
 import { Settings } from '@plannotator/ui/components/Settings';
+import { getApiUrl } from '@plannotator/ui/utils/apiUrl';
 import { FeedbackButton, ApproveButton, ExitButton } from '@plannotator/ui/components/ToolbarButtons';
 import { AgentReviewActions } from './components/AgentReviewActions';
 import { UpdateBanner } from '@plannotator/ui/components/UpdateBanner';
@@ -19,6 +21,8 @@ import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/u
 import { getAIProviderSettings, saveAIProviderSettings, getPreferredModel } from '@plannotator/ui/utils/aiProvider';
 import { AISetupDialog } from '@plannotator/ui/components/AISetupDialog';
 import { needsAISetup } from '@plannotator/ui/utils/aiSetup';
+import { DiffTypeSetupDialog } from '@plannotator/ui/components/DiffTypeSetupDialog';
+import { needsDiffTypeSetup } from '@plannotator/ui/utils/diffTypeSetup';
 import { CodeAnnotation, CodeAnnotationType, SelectedLineRange, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration } from '@plannotator/ui/types';
 import { useResizablePanel } from '@plannotator/ui/hooks/useResizablePanel';
 import { useCodeAnnotationDraft } from '@plannotator/ui/hooks/useCodeAnnotationDraft';
@@ -29,6 +33,7 @@ import { extractLinesFromPatch } from './utils/patchParser';
 import { isTypingTarget, useReviewSearch, type ReviewSearchMatch } from './hooks/useReviewSearch';
 import { useEditorAnnotations } from '@plannotator/ui/hooks/useEditorAnnotations';
 import { useExternalAnnotations } from '@plannotator/ui/hooks/useExternalAnnotations';
+import { useSessions } from '@plannotator/ui/hooks/useSessions';
 import { useAgentJobs } from '@plannotator/ui/hooks/useAgentJobs';
 import { exportEditorAnnotations } from '@plannotator/ui/utils/parser';
 import { ResizeHandle } from '@plannotator/ui/components/ResizeHandle';
@@ -57,6 +62,8 @@ import type { DiffFile } from './types';
 import type { DiffOption, WorktreeInfo, GitContext } from '@plannotator/shared/types';
 import type { PRMetadata } from '@plannotator/shared/pr-provider';
 import { altKey } from '@plannotator/ui/utils/platform';
+import { TourDialog } from './components/tour/TourDialog';
+import { DEMO_TOUR_ID } from './demoTour';
 
 declare const __APP_VERSION__: string;
 
@@ -154,6 +161,17 @@ const ReviewApp: React.FC = () => {
   const [isWSL, setIsWSL] = useState(false);
   const [diffType, setDiffType] = useState<string>('uncommitted');
   const [gitContext, setGitContext] = useState<GitContext | null>(null);
+  // Two bases:
+  //   selectedBase  — what the picker is currently showing (UI intent).
+  //                   Updates immediately when the user picks, so the chip
+  //                   feels responsive.
+  //   committedBase — the base the server last computed the patch against.
+  //                   Drives file-content fetches. Only updates after
+  //                   /api/diff/switch returns, so we never pair an old
+  //                   patch with a new base's file contents (race that
+  //                   produced "trailing context mismatch" warnings).
+  const [selectedBase, setSelectedBase] = useState<string | null>(null);
+  const [committedBase, setCommittedBase] = useState<string | null>(null);
   const [agentCwd, setAgentCwd] = useState<string | null>(null);
   const [isLoadingDiff, setIsLoadingDiff] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
@@ -165,6 +183,8 @@ const ReviewApp: React.FC = () => {
   const [showExitWarning, setShowExitWarning] = useState(false);
   const [sharingEnabled, setSharingEnabled] = useState(true);
   const [repoInfo, setRepoInfo] = useState<{ display: string; branch?: string } | null>(null);
+  const [cwd, setCwd] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   useEffect(() => {
     document.title = repoInfo ? `${repoInfo.display} · Code Review` : "Code Review";
@@ -222,10 +242,14 @@ const ReviewApp: React.FC = () => {
   const { externalAnnotations, updateExternalAnnotation, deleteExternalAnnotation } = useExternalAnnotations<CodeAnnotation>({ enabled: !!origin });
   const agentJobs = useAgentJobs({ enabled: !!origin });
 
+  // Tour dialog state — opens as an overlay instead of a dock panel
+  const [tourDialogJobId, setTourDialogJobId] = useState<string | null>(null);
+
   // Dockview center panel API for the review workspace.
   const [dockApi, setDockApi] = useState<DockviewApi | null>(null);
   const filesRef = useRef(files);
   filesRef.current = files;
+  const { sessions, isLoading: isLoadingSessions, fetchSessions, currentSessionId } = useSessions(sessionId, isApiMode);
   const needsInitialDiffPanel = useRef(true);
 
   // PR context (lifted from sidebar so center dock PR panels can access it)
@@ -362,6 +386,9 @@ const ReviewApp: React.FC = () => {
     };
   });
   const [showAISetup, setShowAISetup] = useState(false);
+  const [aiCheckComplete, setAiCheckComplete] = useState(false);
+  const [showDiffTypeSetup, setShowDiffTypeSetup] = useState(false);
+  const [diffTypeSetupPending, setDiffTypeSetupPending] = useState(false);
   const [sidebarTabOverride, setSidebarTabOverride] = useState<'ai' | undefined>(undefined);
   const aiChat = useAIChat({
     patch: diffData?.rawPatch ?? '',
@@ -372,7 +399,7 @@ const ReviewApp: React.FC = () => {
 
   // Check AI capabilities on mount
   useEffect(() => {
-    fetch('/api/ai/capabilities')
+    fetch(getApiUrl('/api/ai/capabilities'))
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data?.available) {
@@ -383,8 +410,9 @@ const ReviewApp: React.FC = () => {
             setShowAISetup(true);
           }
         }
+        setAiCheckComplete(true);
       })
-      .catch(() => {});
+      .catch(() => { setAiCheckComplete(true); });
   }, []);
 
   const handleAIConfigChange = useCallback((config: { providerId?: string | null; model?: string | null }) => {
@@ -541,6 +569,39 @@ const ReviewApp: React.FC = () => {
     });
   }, [dockApi, agentJobs.jobs]);
 
+  // Open tour as a dialog overlay
+  const handleOpenTour = useCallback((jobId: string) => {
+    setTourDialogJobId(jobId);
+  }, []);
+
+  // Dev-only: Cmd/Ctrl+Shift+T toggles the demo tour for fast UI iteration.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'T' || e.key === 't')) {
+        e.preventDefault();
+        setTourDialogJobId(prev => (prev === DEMO_TOUR_ID ? null : DEMO_TOUR_ID));
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // Auto-open tour dialog when a tour job completes
+  const tourAutoOpenRef = useRef(new Set<string>());
+  useEffect(() => {
+    for (const job of agentJobs.jobs) {
+      if (
+        job.provider === 'tour' &&
+        job.status === 'done' &&
+        !tourAutoOpenRef.current.has(job.id)
+      ) {
+        tourAutoOpenRef.current.add(job.id);
+        setTourDialogJobId(job.id);
+      }
+    }
+  }, [agentJobs.jobs]);
+
   // Open PR panel as center dock panel
   const handleOpenPRPanel = useCallback((type: 'summary' | 'comments' | 'checks') => {
     const api = dockApi;
@@ -612,7 +673,7 @@ const ReviewApp: React.FC = () => {
 
   // Load diff content - try API first, fall back to demo
   useEffect(() => {
-    fetch('/api/diff')
+    fetch(getApiUrl('/api/diff'))
       .then(res => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
@@ -622,6 +683,7 @@ const ReviewApp: React.FC = () => {
         gitRef: string;
         origin?: Origin;
         diffType?: string;
+        base?: string;
         gitContext?: GitContext;
         agentCwd?: string;
         sharingEnabled?: boolean;
@@ -632,6 +694,7 @@ const ReviewApp: React.FC = () => {
         error?: string;
         isWSL?: boolean;
         serverConfig?: { displayName?: string; gitUser?: string };
+        cwd?: string;
       }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
@@ -650,10 +713,19 @@ const ReviewApp: React.FC = () => {
         setFiles(apiFiles);
         if (data.origin) setOrigin(data.origin);
         if (data.diffType) setDiffType(data.diffType);
-        if (data.gitContext) setGitContext(data.gitContext);
+        if (data.gitContext) {
+          setGitContext(data.gitContext);
+          // Prefer the server's active base (survives page refresh / reconnect)
+          // over the detected default, so the picker rehydrates to what the
+          // server is actually using.
+          const initial = data.base || data.gitContext.defaultBranch || null;
+          setSelectedBase(initial);
+          setCommittedBase(initial);
+        }
         if (data.agentCwd) setAgentCwd(data.agentCwd);
         if (data.sharingEnabled !== undefined) setSharingEnabled(data.sharingEnabled);
         if (data.repoInfo) setRepoInfo(data.repoInfo);
+        if (data.sessionId) setSessionId(data.sessionId);
         if (data.prMetadata) setPrMetadata(data.prMetadata);
         if (data.platformUser) setPlatformUser(data.platformUser);
         // Initialize viewed files from GitHub's state (set before draft restore so draft takes precedence)
@@ -662,6 +734,11 @@ const ReviewApp: React.FC = () => {
         }
         if (data.error) setDiffError(data.error);
         if (data.isWSL) setIsWSL(true);
+// Mark diff type setup as pending on first run (local mode only)
+        if (data.diffType && !data.prMetadata && data.gitContext?.vcsType !== 'p4' && needsDiffTypeSetup()) {
+          setDiffTypeSetupPending(true);
+        }
+if (data.cwd) setCwd(data.cwd);
       })
       .catch(() => {
         // Not in API mode - use demo content
@@ -675,6 +752,14 @@ const ReviewApp: React.FC = () => {
       })
       .finally(() => setIsLoading(false));
   }, []);
+
+  // Show diff type setup dialog only after AI setup dialog is dismissed (avoid stacking)
+  useEffect(() => {
+    if (diffTypeSetupPending && aiCheckComplete && !showAISetup) {
+      setDiffTypeSetupPending(false);
+      setShowDiffTypeSetup(true);
+    }
+  }, [diffTypeSetupPending, aiCheckComplete, showAISetup]);
 
   const handleDiffStyleChange = useCallback((style: 'split' | 'unified') => {
     configStore.set('diffStyle', style);
@@ -829,7 +914,7 @@ const ReviewApp: React.FC = () => {
       // Sync viewed state to GitHub (fire and forget — best effort)
       // Capture willBeViewed inside the callback to ensure correctness with React batching
       if (prMetadata && prMetadata.platform === 'github') {
-        fetch('/api/pr-viewed', {
+        fetch(getApiUrl('/api/pr-viewed'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ filePaths: [filePath], viewed: willBeViewed }),
@@ -848,7 +933,7 @@ const ReviewApp: React.FC = () => {
       const lastColon = rest.lastIndexOf(':');
       if (lastColon !== -1) {
         const sub = rest.slice(lastColon + 1);
-        if (['uncommitted', 'staged', 'unstaged', 'last-commit', 'branch'].includes(sub)) {
+        if (['uncommitted', 'staged', 'unstaged', 'last-commit', 'branch', 'merge-base'].includes(sub)) {
           return { activeWorktreePath: rest.slice(0, lastColon), activeDiffBase: sub };
         }
       }
@@ -869,14 +954,21 @@ const ReviewApp: React.FC = () => {
   // Staging is never available in PR review mode — the server rejects it and the UI shouldn't offer it.
   const canStageFiles = canStageRaw && !prMetadata;
 
-  // Shared helper: fetch a diff switch and update state
-  const fetchDiffSwitch = useCallback(async (fullDiffType: string) => {
+  // Shared helper: fetch a diff switch and update state.
+  // Returns true on success, false on failure — callers that optimistically
+  // updated UI state (e.g. the base picker) can use this to revert.
+  const fetchDiffSwitch = useCallback(async (fullDiffType: string, baseOverride?: string): Promise<boolean> => {
     setIsLoadingDiff(true);
     try {
-      const res = await fetch('/api/diff/switch', {
+      const res = await fetch(getApiUrl('/api/diff/switch'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ diffType: fullDiffType }),
+        body: JSON.stringify({
+          diffType: fullDiffType,
+          // Server ignores base for modes that don't use it (uncommitted/staged/etc),
+          // so forwarding unconditionally is safe and keeps the request shape uniform.
+          ...((baseOverride ?? selectedBase) && { base: baseOverride ?? selectedBase }),
+        }),
       });
 
       if (!res.ok) throw new Error('Failed to switch diff');
@@ -885,25 +977,78 @@ const ReviewApp: React.FC = () => {
         rawPatch: string;
         gitRef: string;
         diffType: string;
+        base?: string;
+        gitContext?: GitContext;
         error?: string;
       };
 
       const nextFiles = parseDiffToFiles(data.rawPatch);
       dockApi?.getPanel(REVIEW_DIFF_PANEL_ID)?.api.close();
       needsInitialDiffPanel.current = true;
+      setDiffData(prev => prev ? { ...prev, rawPatch: data.rawPatch, gitRef: data.gitRef, diffType: data.diffType } : prev);
       setFiles(nextFiles);
       setDiffType(data.diffType);
+      // Adopt the server's echoed base. The server trusts whatever we sent
+      // verbatim — this sync just makes sure selectedBase and committedBase
+      // match the server's view (important when the caller didn't send a
+      // base and the server used the detected default instead).
+      if (data.base) {
+        setSelectedBase(data.base);
+        setCommittedBase(data.base);
+      }
+      // Merge only the per-cwd fields so the sidebar reflects the worktree
+      // we're now in. Keep the original `worktrees` list (already filtered to
+      // exclude the server's startup cwd — replacing it with the new context's
+      // list would duplicate the "Main repo" entry) and `availableBranches`
+      // (shared across worktrees of the same repo).
+      //
+      // IMPORTANT: we deliberately do NOT overwrite `currentBranch`. The
+      // WorktreePicker's top "launch" row uses it as a label, and that row
+      // represents the cwd plannotator was launched in — not whichever
+      // worktree is currently active. Freezing `currentBranch` at its
+      // initial-load value keeps that label truthful. `defaultBranch` and
+      // `diffOptions` update because they describe the active diff, which
+      // other UI (empty-state text, diff-type picker) should see fresh.
+      if (data.gitContext) {
+        setGitContext((prev) => {
+          if (!prev) return data.gitContext!;
+          return {
+            ...prev,
+            defaultBranch: data.gitContext!.defaultBranch,
+            diffOptions: data.gitContext!.diffOptions,
+          };
+        });
+      }
       setActiveFileIndex(0);
       setPendingSelection(null);
       setDiffError(data.error || null);
       resetStagedFiles();
+      return true;
     } catch (err) {
       console.error('Failed to switch diff:', err);
       setDiffError(err instanceof Error ? err.message : 'Failed to switch diff');
+      return false;
     } finally {
       setIsLoadingDiff(false);
     }
-  }, [dockApi, resetStagedFiles]);
+  }, [dockApi, resetStagedFiles, selectedBase]);
+
+  // Switch the base branch the current diff compares against.
+  // Only triggers a refetch when the active mode actually uses a base.
+  // Optimistically updates the picker; reverts if the server-side switch
+  // fails so the chip doesn't lie about what the viewer is actually showing.
+  const handleBaseSelect = useCallback(
+    async (branch: string) => {
+      if (branch === selectedBase) return;
+      const previous = selectedBase;
+      setSelectedBase(branch);
+      if (activeDiffBase === 'branch' || activeDiffBase === 'merge-base') {
+        const ok = await fetchDiffSwitch(diffType, branch);
+        if (!ok) setSelectedBase(previous);
+      }
+    },
+    [selectedBase, activeDiffBase, diffType, fetchDiffSwitch],
+  );
 
   // Switch diff type (uncommitted, last-commit, branch) — composes worktree prefix if active
   const handleDiffSwitch = useCallback(async (baseDiffType: string) => {
@@ -914,14 +1059,17 @@ const ReviewApp: React.FC = () => {
     await fetchDiffSwitch(fullDiffType);
   }, [diffType, activeWorktreePath, fetchDiffSwitch]);
 
-  // Switch worktree context (or back to main repo)
+  // Switch worktree context (or back to main repo). Preserves the current
+  // diff mode across the switch — if the reviewer was looking at "PR Diff"
+  // in the main repo, they should keep looking at "PR Diff" in the target
+  // worktree rather than being silently snapped back to "Uncommitted".
   const handleWorktreeSwitch = useCallback(async (worktreePath: string | null) => {
     if (worktreePath === activeWorktreePath) return;
     const fullDiffType = worktreePath
-      ? `worktree:${worktreePath}:uncommitted`
-      : 'uncommitted';
+      ? `worktree:${worktreePath}:${activeDiffBase}`
+      : activeDiffBase;
     await fetchDiffSwitch(fullDiffType);
-  }, [activeWorktreePath, fetchDiffSwitch]);
+  }, [activeWorktreePath, activeDiffBase, fetchDiffSwitch]);
 
   // Select annotation - switches file if needed and scrolls to it
   const handleSelectAnnotation = useCallback((id: string | null) => {
@@ -946,6 +1094,26 @@ const ReviewApp: React.FC = () => {
     setSelectedAnnotationId(id);
   }, [allAnnotations, files, handleFileSwitch]);
 
+  // Diff context bundled into local-mode feedback headers so the receiving
+  // agent knows which diff the annotations are anchored to. Uses committedBase
+  // (what the server actually computed) and activeDiffBase/activeWorktreePath
+  // (derived from the committed diffType). Skipped in PR mode — the PR header
+  // already carries the relevant context.
+  // Declared before reviewStateValue because both reviewStateValue and the
+  // feedbackMarkdown memo below read it; moving it below either would put it
+  // in the TDZ when those memos run on first render.
+  const feedbackDiffContext = useMemo(
+    () =>
+      prMetadata || !activeDiffBase
+        ? undefined
+        : {
+            mode: activeDiffBase,
+            base: committedBase ?? undefined,
+            worktreePath: activeWorktreePath,
+          },
+    [prMetadata, activeDiffBase, committedBase, activeWorktreePath],
+  );
+
   // Build ReviewState value for dock panel context
   const reviewStateValue = useMemo<ReviewState>(() => ({
     files,
@@ -959,6 +1127,17 @@ const ReviewApp: React.FC = () => {
     disableBackground: !diffShowBackground,
     fontFamily: diffFontFamily || undefined,
     fontSize: diffFontSize || undefined,
+    // Only propagate base for modes where it affects old/new content. Avoids
+    // needless file-content re-fetches when switching to uncommitted/staged/etc.
+    // Uses committedBase (not selectedBase) so file-content queries wait for
+    // the new patch to arrive before refetching — otherwise the viewer can
+    // briefly pair an old patch with the new base's content.
+    reviewBase:
+      (activeDiffBase === 'branch' || activeDiffBase === 'merge-base')
+        ? committedBase ?? undefined
+        : undefined,
+    activeDiffBase,
+    feedbackDiffContext,
     allAnnotations,
     externalAnnotations,
     selectedAnnotationId,
@@ -997,10 +1176,12 @@ const ReviewApp: React.FC = () => {
     fetchPRContext,
     platformUser,
     openDiffFile,
+    openTourPanel: handleOpenTour,
   }), [
     files, activeFileIndex, diffStyle, diffOverflow, diffIndicators,
     diffLineDiffType, diffShowLineNumbers, diffShowBackground,
-    diffFontFamily, diffFontSize, allAnnotations, externalAnnotations,
+    diffFontFamily, diffFontSize, activeDiffBase, committedBase, feedbackDiffContext,
+    allAnnotations, externalAnnotations,
     selectedAnnotationId, pendingSelection, handleLineSelection,
     handleAddAnnotation, handleAddFileComment, handleEditAnnotation,
     handleSelectAnnotation, handleDeleteAnnotation, viewedFiles,
@@ -1011,6 +1192,7 @@ const ReviewApp: React.FC = () => {
     handleAskAI, handleViewAIResponse, handleClickAIMarker,
     aiHistoryForSelection, agentJobs.jobs, prMetadata, prContext,
     isPRContextLoading, prContextError, fetchPRContext, platformUser, openDiffFile,
+    handleOpenTour,
   ]);
 
   // Separate context for high-frequency job logs — prevents re-rendering all panels on every SSE event
@@ -1037,7 +1219,7 @@ const ReviewApp: React.FC = () => {
       return;
     }
     try {
-      const feedback = exportReviewFeedback(allAnnotations, prMetadata);
+      const feedback = exportReviewFeedback(allAnnotations, prMetadata, feedbackDiffContext);
       await navigator.clipboard.writeText(feedback);
       setCopyFeedback('Feedback copied!');
       setTimeout(() => setCopyFeedback(null), 2000);
@@ -1046,15 +1228,15 @@ const ReviewApp: React.FC = () => {
       setCopyFeedback('Failed to copy');
       setTimeout(() => setCopyFeedback(null), 2000);
     }
-  }, [allAnnotations, prMetadata]);
+  }, [allAnnotations, prMetadata, feedbackDiffContext]);
 
   const feedbackMarkdown = useMemo(() => {
-    let output = exportReviewFeedback(allAnnotations, prMetadata);
+    let output = exportReviewFeedback(allAnnotations, prMetadata, feedbackDiffContext);
     if (editorAnnotations.length > 0) {
       output += exportEditorAnnotations(editorAnnotations);
     }
     return output;
-  }, [allAnnotations, prMetadata, editorAnnotations]);
+  }, [allAnnotations, prMetadata, feedbackDiffContext, editorAnnotations]);
 
   const totalAnnotationCount = allAnnotations.length + editorAnnotations.length;
 
@@ -1069,7 +1251,7 @@ const ReviewApp: React.FC = () => {
       const agentSwitchSettings = getAgentSwitchSettings();
       const effectiveAgent = getEffectiveAgentName(agentSwitchSettings);
 
-      const res = await fetch('/api/feedback', {
+      const res = await fetch(getApiUrl('/api/feedback'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1096,7 +1278,7 @@ const ReviewApp: React.FC = () => {
   const handleExit = useCallback(async () => {
     setIsExiting(true);
     try {
-      const res = await fetch('/api/exit', { method: 'POST' });
+      const res = await fetch(getApiUrl('/api/exit'), { method: 'POST' });
       if (res.ok) {
         setSubmitted('exited');
       } else {
@@ -1112,7 +1294,7 @@ const ReviewApp: React.FC = () => {
   const handleApprove = useCallback(async () => {
     setIsApproving(true);
     try {
-      const res = await fetch('/api/feedback', {
+      const res = await fetch(getApiUrl('/api/feedback'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1200,7 +1382,7 @@ const ReviewApp: React.FC = () => {
     setPlatformActionError(null);
     try {
       const payload = buildPRReviewPayload(action, generalComment);
-      const prRes = await fetch('/api/pr-action', {
+      const prRes = await fetch(getApiUrl('/api/pr-action'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1224,7 +1406,7 @@ const ReviewApp: React.FC = () => {
       const statusMessage = action === 'approve'
         ? `${mrLabel === 'MR' ? 'Merge request' : 'Pull request'} approved on ${platformLabel}${prLink ? ': ' + prLink : ''}`
         : `${mrLabel === 'MR' ? 'Merge request' : 'Pull request'} reviewed on ${platformLabel}${prLink ? ': ' + prLink : ''}`;
-      await fetch('/api/feedback', {
+      await fetch(getApiUrl('/api/feedback'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1345,6 +1527,7 @@ const ReviewApp: React.FC = () => {
 
   return (
     <ThemeProvider defaultTheme="dark">
+      <TooltipProvider delayDuration={200} skipDelayDuration={100}>
       <ReviewStateProvider value={reviewStateValue}>
       <JobLogsProvider value={jobLogsValue}>
       <div className="h-screen flex flex-col bg-background overflow-hidden">
@@ -1391,9 +1574,9 @@ const ReviewApp: React.FC = () => {
                   </button>
                 </div>
               </div>
-            ) : repoInfo ? (
+            ) : repoInfo || cwd ? (
               <div className="min-w-0 flex items-center gap-2 md:gap-3">
-                {repoInfo.branch && (
+                {repoInfo?.branch && (
                   <span
                     className="text-xs font-mono text-foreground truncate"
                     title={repoInfo.branch}
@@ -1401,13 +1584,23 @@ const ReviewApp: React.FC = () => {
                     {repoInfo.branch}
                   </span>
                 )}
-                <span
-                  className="text-xs text-muted-foreground/60 inline-flex items-center gap-1 truncate max-w-[220px]"
-                  title={repoInfo.display}
-                >
-                  <RepoIcon className="w-3 h-3 flex-shrink-0" />
-                  {repoInfo.display}
-                </span>
+                {repoInfo && (
+                  <span
+                    className="text-xs text-muted-foreground/60 inline-flex items-center gap-1 truncate max-w-[220px]"
+                    title={repoInfo.display}
+                  >
+                    <RepoIcon className="w-3 h-3 flex-shrink-0" />
+                    {repoInfo.display}
+                  </span>
+                )}
+                {cwd && (
+                  <span
+                    className="text-xs text-muted-foreground/60 font-mono inline-flex items-center gap-1 truncate max-w-[250px]"
+                    title={cwd}
+                  >
+                    {cwd.split('/').pop() || cwd}
+                  </span>
+                )}
               </div>
             ) : (
               <span className="text-xs text-muted-foreground/70">Review</span>
@@ -1643,6 +1836,10 @@ const ReviewApp: React.FC = () => {
                 activeWorktreePath={activeWorktreePath}
                 onSelectWorktree={handleWorktreeSwitch}
                 currentBranch={gitContext?.currentBranch}
+                availableBranches={prMetadata ? undefined : gitContext?.availableBranches}
+                selectedBase={prMetadata ? undefined : selectedBase ?? undefined}
+                detectedBase={prMetadata ? undefined : gitContext?.defaultBranch}
+                onSelectBase={prMetadata ? undefined : handleBaseSelect}
                 stagedFiles={stagedFiles}
                 onCopyRawDiff={handleCopyDiff}
                 canCopyRawDiff={!!diffData?.rawPatch}
@@ -1718,7 +1915,8 @@ const ReviewApp: React.FC = () => {
                           {activeDiffBase === 'staged' && "No staged changes. Stage some files with git add."}
                           {activeDiffBase === 'unstaged' && "No unstaged changes. All changes are staged."}
                           {activeDiffBase === 'last-commit' && `No changes in the last commit${activeWorktreePath ? ' in this worktree' : ''}.`}
-                          {activeDiffBase === 'branch' && `No changes vs ${gitContext?.defaultBranch || 'main'}${activeWorktreePath ? ' in this worktree' : ''}.`}
+                          {activeDiffBase === 'branch' && `No changes vs ${selectedBase || gitContext?.defaultBranch || 'main'}${activeWorktreePath ? ' in this worktree' : ''}.`}
+                          {activeDiffBase === 'merge-base' && `No changes vs ${selectedBase || gitContext?.defaultBranch || 'main'}${activeWorktreePath ? ' in this worktree' : ''}.`}
                         </p>
                       </>
                     )}
@@ -1774,6 +1972,10 @@ const ReviewApp: React.FC = () => {
             externalAnnotations={externalAnnotations}
             onOpenJobDetail={handleOpenJobDetail}
             onOpenPRPanel={handleOpenPRPanel}
+            sessions={sessions}
+            isLoadingSessions={isLoadingSessions}
+            onFetchSessions={fetchSessions}
+            currentSessionId={currentSessionId}
           />
         </div>
 
@@ -1907,6 +2109,16 @@ const ReviewApp: React.FC = () => {
           }}
         />
 
+        {/* Diff type setup dialog — first-run only */}
+        {showDiffTypeSetup && (
+          <DiffTypeSetupDialog
+            onComplete={(selected) => {
+              setShowDiffTypeSetup(false);
+              if (selected !== diffType) handleDiffSwitch(selected);
+            }}
+          />
+        )}
+
         {/* Completion overlay - shown after approve/feedback/exit */}
         <CompletionOverlay
           submitted={submitted}
@@ -1991,8 +2203,25 @@ const ReviewApp: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Tour dialog overlay */}
+      <TourDialog jobId={tourDialogJobId} onClose={() => setTourDialogJobId(null)} />
+
+      {/* Dev-only: open a fully-formed demo tour without running the agent.
+          Stripped from production builds via import.meta.env.DEV. */}
+      {import.meta.env.DEV && (
+        <button
+          onClick={() => setTourDialogJobId(tourDialogJobId === DEMO_TOUR_ID ? null : DEMO_TOUR_ID)}
+          title="Open the demo tour (dev only). Cmd+Shift+T also works."
+          className="fixed bottom-3 right-3 z-[60] px-2.5 py-1 rounded-md bg-foreground/80 text-background text-[10px] font-mono uppercase tracking-wider shadow-lg hover:bg-foreground transition-colors"
+        >
+          {tourDialogJobId === DEMO_TOUR_ID ? 'Close tour' : 'Demo tour'}
+        </button>
+      )}
+
     </JobLogsProvider>
     </ReviewStateProvider>
+    </TooltipProvider>
     </ThemeProvider>
   );
 };

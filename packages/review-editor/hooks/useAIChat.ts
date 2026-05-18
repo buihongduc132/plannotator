@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { AIQuestion, AIResponse } from '@plannotator/ui/types';
 import { generateId } from '../utils/generateId';
+import { getApiUrl } from '@plannotator/ui/utils/apiUrl';
 export interface AIChatEntry {
   question: AIQuestion;
   response: AIResponse;
@@ -50,7 +51,7 @@ export function useAIChat({ patch, providerId, model, reasoningEffort }: UseAICh
   const createSession = useCallback(async (signal: AbortSignal): Promise<string> => {
     setIsCreatingSession(true);
     try {
-      const res = await fetch('/api/ai/session', {
+      const res = await fetch(getApiUrl('/api/ai/session'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -137,7 +138,7 @@ export function useAIChat({ patch, providerId, model, reasoningEffort }: UseAICh
       // else: general — use prompt as-is
 
       // Start SSE stream
-      const res = await fetch('/api/ai/query', {
+      const res = await fetch(getApiUrl('/api/ai/query'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId: sid, prompt: fullPrompt }),
@@ -265,7 +266,7 @@ export function useAIChat({ patch, providerId, model, reasoningEffort }: UseAICh
     }
     // Also tell the server to abort
     if (sessionIdRef.current) {
-      fetch('/api/ai/abort', {
+      fetch(getApiUrl('/api/ai/abort'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId: sessionIdRef.current }),
@@ -282,7 +283,7 @@ export function useAIChat({ patch, providerId, model, reasoningEffort }: UseAICh
     );
 
     // Send the decision to the server
-    fetch('/api/ai/permission', {
+    fetch(getApiUrl('/api/ai/permission'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

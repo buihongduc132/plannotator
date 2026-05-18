@@ -14,10 +14,9 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { ExternalAnnotationEvent } from '../types';
+import { getApiUrl } from '../utils/apiUrl';
 
 const POLL_INTERVAL_MS = 500;
-const STREAM_URL = '/api/external-annotations/stream';
-const SNAPSHOT_URL = '/api/external-annotations';
 
 interface UseExternalAnnotationsReturn<T> {
   externalAnnotations: T[];
@@ -41,7 +40,7 @@ export function useExternalAnnotations<T extends { id: string; source?: string }
     let cancelled = false;
 
     // --- SSE primary transport ---
-    const es = new EventSource(STREAM_URL);
+    const es = new EventSource(getApiUrl('/api/external-annotations/stream'));
 
     es.onmessage = (event) => {
       if (cancelled) return;
@@ -107,8 +106,8 @@ export function useExternalAnnotations<T extends { id: string; source?: string }
       try {
         const url =
           versionRef.current > 0
-            ? `${SNAPSHOT_URL}?since=${versionRef.current}`
-            : SNAPSHOT_URL;
+? `${getApiUrl('/api/external-annotations')}?since=${versionRef.current}`
+      : getApiUrl('/api/external-annotations');
 
         const res = await fetch(url);
 
@@ -142,7 +141,7 @@ export function useExternalAnnotations<T extends { id: string; source?: string }
     setAnnotations((prev) => prev.filter((a) => a.id !== id));
     try {
       await fetch(
-        `${SNAPSHOT_URL}?id=${encodeURIComponent(id)}`,
+        `${getApiUrl('/api/external-annotations')}?id=${encodeURIComponent(id)}`,
         { method: 'DELETE' },
       );
     } catch {
@@ -157,7 +156,7 @@ export function useExternalAnnotations<T extends { id: string; source?: string }
     );
     try {
       const qs = source ? `?source=${encodeURIComponent(source)}` : '';
-      await fetch(`${SNAPSHOT_URL}${qs}`, { method: 'DELETE' });
+      await fetch(`${getApiUrl('/api/external-annotations')}${qs}`, { method: 'DELETE' });
     } catch {
       // SSE will reconcile on next event
     }
@@ -166,7 +165,7 @@ export function useExternalAnnotations<T extends { id: string; source?: string }
   const updateExternalAnnotation = useCallback(async (id: string, updates: Partial<T>) => {
     setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, ...updates } : a)));
     try {
-      await fetch(`${SNAPSHOT_URL}?id=${encodeURIComponent(id)}`, {
+      await fetch(`${getApiUrl('/api/external-annotations')}?id=${encodeURIComponent(id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
