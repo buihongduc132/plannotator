@@ -22,6 +22,7 @@ import {
   parseProcessTablePs,
   resolveSessionLogByAncestorPids,
   resolveSessionLogByCwdScan,
+  resolveSessionLogByPpid,
   type SessionLogEntry,
 } from "./session-log";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -1055,6 +1056,54 @@ describe("resolveSessionLogByCwdScan (cross-platform cwd matching)", () => {
         projectsDir,
       });
       expect(result).toBe(log);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+// ── resolveSessionLogByPpid tests ──────────────────────────────────
+
+describe("resolveSessionLogByPpid", () => {
+  test("resolves when ppid has valid session metadata", () => {
+    const { sessionsDir, projectsDir, cleanup } = makeTempDirs("ppid-resolve");
+    try {
+      const sessionId = "ppid-test-session";
+      const cwd = join(projectsDir, "my-project");
+      mkdirSync(cwd, { recursive: true });
+
+      writeSessionMeta(sessionsDir, process.ppid, { sessionId, cwd });
+      const logPath = writeSessionLog(projectsDir, cwd, sessionId);
+
+      const result = resolveSessionLogByPpid({ sessionsDir, projectsDir });
+      expect(result).toBe(logPath);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("returns null when ppid has no session metadata file", () => {
+    const { sessionsDir, projectsDir, cleanup } = makeTempDirs("ppid-no-meta");
+    try {
+      // No metadata written for process.ppid → should return null
+      const result = resolveSessionLogByPpid({ sessionsDir, projectsDir });
+      expect(result).toBeNull();
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("returns null when metadata has no matching jsonl", () => {
+    const { sessionsDir, projectsDir, cleanup } = makeTempDirs("ppid-no-log");
+    try {
+      const sessionId = "ppid-no-log-session";
+      const cwd = join(projectsDir, "missing-project");
+
+      writeSessionMeta(sessionsDir, process.ppid, { sessionId, cwd });
+      // Don't write the session log → should return null
+
+      const result = resolveSessionLogByPpid({ sessionsDir, projectsDir });
+      expect(result).toBeNull();
     } finally {
       cleanup();
     }

@@ -88,6 +88,7 @@ import {
   getLastRenderedMessage,
   resolveSessionLogByAncestorPids,
   resolveSessionLogByCwdScan,
+  resolveSessionLogByPpid,
   type RenderedMessage,
 } from "./session-log";
 import { findCodexRolloutByThreadId, getLastCodexMessage } from "./codex-session";
@@ -120,7 +121,6 @@ if (browserIdx !== -1 && args[browserIdx + 1]) {
   args.splice(browserIdx, 2);
 }
 
-D
 // Global flag: --no-jina (disables Jina Reader for URL annotation)
 const noJinaIdx = args.indexOf("--no-jina");
 const cliNoJina = noJinaIdx !== -1;
@@ -659,10 +659,9 @@ if (args[0] === "sessions") {
     origin: detectedOrigin,
     mode: annotateMode,
     folderPath,
-    D
-    sourceInfo,,
+    sourceInfo,
     sessionId: explicitSessionId,
-    cwd: projectRoot,,
+    cwd: projectRoot,
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
@@ -914,6 +913,127 @@ if (args[0] === "sessions") {
 
   await Bun.sleep(500);
   server.stop();
+  process.exit(0);
+
+} else if (args[0] === "last-message") {
+  // ============================================
+  // LAST MESSAGE PLAN REVIEW MODE
+  // Opens the last assistant message in the plan review UI
+  // (not annotate — this uses the plan viewer)
+  // ============================================
+
+  const projectRoot = process.env.PLANNOTATOR_CWD || process.cwd();
+  const codexThreadId = process.env.CODEX_THREAD_ID;
+
+  let lastMessage: RenderedMessage | null = null;
+
+  if (codexThreadId) {
+    if (process.env.PLANNOTATOR_DEBUG) {
+      console.error(`[DEBUG] Codex detected, thread ID: ${codexThreadId}`);
+    }
+    const rolloutPath = findCodexRolloutByThreadId(codexThreadId);
+    if (rolloutPath) {
+      if (process.env.PLANNOTATOR_DEBUG) {
+        console.error(`[DEBUG] Rollout: ${rolloutPath}`);
+      }
+      const msg = getLastCodexMessage(rolloutPath);
+      if (msg) {
+        lastMessage = { messageId: codexThreadId, text: msg.text, lineNumbers: [] };
+      }
+    }
+  } else {
+    if (process.env.PLANNOTATOR_DEBUG) {
+      console.error(`[DEBUG] Project root: ${projectRoot}`);
+      console.error(`[DEBUG] PPID: ${process.ppid}`);
+    }
+
+    const ancestorLog = resolveSessionLogByAncestorPids();
+    if (process.env.PLANNOTATOR_DEBUG && ancestorLog) {
+      console.error(`[DEBUG] Ancestor PID session: ${ancestorLog}`);
+    }
+    if (ancestorLog) {
+      lastMessage = getLastRenderedMessage(ancestorLog);
+    }
+    if (!lastMessage) {
+      const cwdScanLog = resolveSessionLogByCwdScan({ cwd: projectRoot });
+      if (cwdScanLog) lastMessage = getLastRenderedMessage(cwdScanLog);
+    }
+    if (!lastMessage) {
+      const cwdLogs = findSessionLogsForCwd(projectRoot);
+      for (const logPath of cwdLogs) {
+        lastMessage = getLastRenderedMessage(logPath);
+        if (lastMessage) break;
+      }
+    }
+    if (!lastMessage) {
+      const ancestorLogs = findSessionLogsByAncestorWalk(projectRoot);
+      for (const logPath of ancestorLogs) {
+        lastMessage = getLastRenderedMessage(logPath);
+        if (lastMessage) break;
+      }
+    }
+    if (!lastMessage) {
+      const ppidLog = resolveSessionLogByPpid();
+      if (ppidLog) lastMessage = getLastRenderedMessage(ppidLog);
+    }
+  }
+
+  if (!lastMessage) {
+    // REQ-14: actionable error — list active sessions with wait guidance
+    const sessions = listSessions();
+    console.error("No rendered assistant message found in session logs.");
+    console.error("");
+    if (sessions.length > 0) {
+      console.error("Active sessions:");
+      for (let i = 0; i < sessions.length; i++) {
+        const s = sessions[i];
+        const age = Math.round((Date.now() - new Date(s.startedAt).getTime()) / 60000);
+        const ageStr = age < 60 ? `${age}m` : `${Math.floor(age / 60)}h ${age % 60}m`;
+        console.error(`  #${i + 1}  ${s.mode.padEnd(9)} ${s.project.padEnd(20)} ${s.url.padEnd(28)} ${ageStr} ago`);
+      }
+      console.error("");
+      console.error("Try again after interacting with the agent in one of the sessions above.");
+    } else {
+      console.error("No active Plannotator sessions detected.");
+      console.error("Start a new session from Claude Code, then try again.");
+    }
+    process.exit(1);
+  }
+
+  const planProject = (await detectProjectName()) ?? "_unknown";
+
+  const { port, url, sessionId: planSessionId, waitForDecision, stop } = await startPlannotatorServer({
+    plan: lastMessage.text,
+    origin: detectedOrigin,
+    sharingEnabled,
+    shareBaseUrl,
+    htmlContent: planHtmlContent,
+    onReady: (url, isRemote, port) => {
+      handleServerReady(url, isRemote, port);
+    },
+  });
+
+  registerSession({
+    pid: process.pid,
+    port: port,
+    url: url,
+    mode: "plan",
+    project: planProject,
+    startedAt: new Date().toISOString(),
+    label: `last-message-${planProject}`,
+  });
+
+  const decision = await waitForDecision(planSessionId!);
+
+  if (decision.approved) {
+    console.log("The user approved.");
+  } else if (decision.feedback) {
+    console.log(decision.feedback);
+  }
+  // else: dismissed — emit nothing so slash command interprets as case 2
+
+  await Bun.sleep(500);
+  stop();
   process.exit(0);
 
 } else if (args[0] === "copilot-plan") {
