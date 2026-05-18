@@ -44,26 +44,9 @@ import {
 	handleImageRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { detectWSL, html, json, parseBody, requestUrl, toWebRequest } from "./helpers.js";
+import { detectWSL, extractSessionSlug, html, injectSessionPath, json, parseBody, requestUrl, toWebRequest } from "./helpers.js";
 
 import { isRemoteSession, listenOnPort } from "./network.js";
-
-/** Regex to extract slug from bare session paths: /s/<slug> or /s/<slug>/anything */
-const BARE_SESSION_SLUG_REGEX = /^\/s\/([^/]+)(?:\/.*)?$/;
-
-function extractSessionSlug(pathname: string): string | null {
-	const match = BARE_SESSION_SLUG_REGEX.exec(pathname);
-	return match ? match[1] : null;
-}
-
-/** Inject session base path into HTML for client-side routing. */
-function injectSessionPath(htmlContent: string, slug: string): string {
-	if (!htmlContent) return htmlContent;
-	const headCloseIdx = htmlContent.lastIndexOf("</head>");
-	if (headCloseIdx === -1) return htmlContent;
-	const injection = `<script>window.__PLANNOTATOR_SESSION_PATH__="/s/${slug}"<` + `/script>`;
-	return htmlContent.slice(0, headCloseIdx) + injection + htmlContent.slice(headCloseIdx);
-}
 
 import {
 	fetchPRContext,
