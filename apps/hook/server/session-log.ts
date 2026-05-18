@@ -581,3 +581,28 @@ export function getLastRenderedMessage(
     return null;
   }
 }
+
+/**
+ * Resolve a session log by checking the direct parent PID's session metadata.
+ * Simplified PPID-only resolver — only checks process.ppid, not the full
+ * ancestor chain (use resolveSessionLogByAncestorPids for that).
+ *
+ * Returns null if PPID has no session metadata or no matching log.
+ */
+export function resolveSessionLogByPpid(
+  opts: {
+    sessionsDir?: string;
+    projectsDir?: string;
+  } = {}
+): string | null {
+  const ppid = process.ppid;
+  if (!ppid) return null;
+  const sessionsDir = opts.sessionsDir ?? DEFAULT_SESSIONS_DIR;
+
+  const meta = readSessionMetadata(ppid, sessionsDir);
+  if (!meta?.sessionId || !meta?.cwd) return null;
+
+  const candidates = findSessionLogsForCwd(meta.cwd, opts.projectsDir);
+  const match = candidates.find((p) => p.includes(meta.sessionId));
+  return match ?? null;
+}
