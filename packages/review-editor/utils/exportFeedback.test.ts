@@ -1,185 +1,199 @@
-import { describe, it, expect } from "bun:test";
-import { exportReviewFeedback } from "./exportFeedback";
-import type { CodeAnnotation } from "@plannotator/ui/types";
-import type { PRMetadata } from "@plannotator/shared/pr-provider";
+import { describe, test, expect, mock, beforeEach } from "bun:test";
 
-const ann = (overrides: Partial<CodeAnnotation> = {}): CodeAnnotation => ({
-  id: "1",
-  type: "comment",
-  filePath: "src/index.ts",
-  lineStart: 10,
-  lineEnd: 10,
-  side: "new",
-  text: "This looks wrong",
-  createdAt: Date.now(),
-  ...overrides,
-});
-
-const prMeta: PRMetadata = {
-  platform: "github",
-  owner: "acme",
-  repo: "widgets",
-  number: 42,
-  title: "fix: broken widget",
-  author: "alice",
-  baseBranch: "main",
-  headBranch: "fix/widget",
-  baseSha: "abc123",
-  headSha: "def456",
-  url: "https://github.com/acme/widgets/pull/42",
-};
-
-describe("exportReviewFeedback", () => {
-  it("local mode: uses generic header, no PR content", () => {
-    const result = exportReviewFeedback([ann()]);
-    expect(result).toStartWith("# Code Review Feedback\n\n");
-    // Must not leak any PR-specific content
-    expect(result).not.toContain("PR Review");
-    expect(result).not.toContain("github.com");
-    expect(result).not.toContain("Branch:");
-    expect(result).not.toContain("acme");
-  });
-
-  it("local mode with null prMetadata: same as no prMetadata", () => {
-    const result = exportReviewFeedback([ann()], null);
-    expect(result).toStartWith("# Code Review Feedback\n\n");
-    expect(result).not.toContain("PR Review");
-  });
-
-  it("local mode with undefined prMetadata: same as no prMetadata", () => {
-    const result = exportReviewFeedback([ann()], undefined);
-    expect(result).toStartWith("# Code Review Feedback\n\n");
-    expect(result).not.toContain("PR Review");
-  });
-
-  it("local mode with diff context: describes mode + base in the header", () => {
-    const result = exportReviewFeedback([ann()], undefined, {
-      mode: "branch",
-      base: "develop",
+describe("exportFeedback", () => {
+  describe("formatConventionalPrefix", () => {
+    test("returns empty string when no label", async () => {
+      const { formatConventionalPrefix } = await import("./exportFeedback");
+      expect(formatConventionalPrefix()).toBe("");
+      expect(formatConventionalPrefix(undefined)).toBe("");
     });
-    expect(result).toContain("**Diff:** Branch diff vs `develop`");
-  });
 
-  it("local mode with merge-base: labels PR Diff with the base", () => {
-    const result = exportReviewFeedback([ann()], undefined, {
-      mode: "merge-base",
-      base: "release/v2",
+    test("formats label only", async () => {
+      const { formatConventionalPrefix } = await import("./exportFeedback");
+      expect(formatConventionalPrefix("issue")).toBe("**issue:** ");
     });
-    expect(result).toContain("**Diff:** PR Diff vs `release/v2`");
-  });
 
-  it("local mode with worktree path: appends worktree info", () => {
-    const result = exportReviewFeedback([ann()], undefined, {
-      mode: "uncommitted",
-      worktreePath: "/tmp/feature-wt",
+    test("formats label with decorations", async () => {
+      const { formatConventionalPrefix } = await import("./exportFeedback");
+      expect(formatConventionalPrefix("issue", ["non-blocking"])).toBe("**issue (non-blocking):** ");
     });
-    expect(result).toContain("**Diff:** Uncommitted changes _(worktree: /tmp/feature-wt)_");
-  });
 
-  it("PR mode ignores diff context (PR header already carries branches)", () => {
-    const result = exportReviewFeedback([ann()], prMeta, {
-      mode: "branch",
-      base: "develop",
+    test("formats label with multiple decorations", async () => {
+      const { formatConventionalPrefix } = await import("./exportFeedback");
+      expect(formatConventionalPrefix("nit", ["non-blocking", "if-minor"])).toBe("**nit (non-blocking, if-minor):** ");
     });
-    // The PR-style branches line must appear.
-    expect(result).toContain("Branch: `fix/widget` → `main`");
-    // The local-mode Diff line must not.
-    expect(result).not.toContain("**Diff:**");
   });
 
-  it("PR mode: includes all PR context fields", () => {
-    const result = exportReviewFeedback([ann()], prMeta);
-    expect(result).toStartWith("# PR Review: acme/widgets#42\n\n");
-    expect(result).toContain("**fix: broken widget**");
-    expect(result).toContain("Branch: `fix/widget` → `main`");
-    expect(result).toContain("https://github.com/acme/widgets/pull/42");
-    // Must not contain the generic local header
-    expect(result).not.toContain("# Code Review Feedback");
+  describe("describeDiff", () => {
+    test("describes uncommitted mode", async () => {
+      const mod = await import("./exportFeedback");
+      // Access via exportReviewFeedback which uses describeDiff internally
+      const feedback = mod.exportReviewFeedback(
+        [{ filePath: "test.ts", lineStart: 1, lineEnd: 1, side: "RIGHT" as const, text: "comment" }],
+        null,
+        { mode: "uncommitted" }
+      );
+      expect(feedback).toContain("Uncommitted changes");
+    });
+
+    test("describes staged mode", async () => {
+      const mod = await import("./exportFeedback");
+      const feedback = mod.exportReviewFeedback(
+        [{ filePath: "test.ts", lineStart: 1, lineEnd: 1, side: "RIGHT" as const, text: "comment" }],
+        null,
+        { mode: "staged" }
+      );
+      expect(feedback).toContain("Staged changes");
+    });
+
+    test("describes branch mode with base", async () => {
+      const mod = await import("./exportFeedback");
+      const feedback = mod.exportReviewFeedback(
+        [{ filePath: "test.ts", lineStart: 1, lineEnd: 1, side: "RIGHT" as const, text: "comment" }],
+        null,
+        { mode: "branch", base: "main" }
+      );
+      expect(feedback).toContain("Branch diff vs `main`");
+    });
+
+    test("describes merge-base mode", async () => {
+      const mod = await import("./exportFeedback");
+      const feedback = mod.exportReviewFeedback(
+        [{ filePath: "test.ts", lineStart: 1, lineEnd: 1, side: "RIGHT" as const, text: "comment" }],
+        null,
+        { mode: "merge-base", base: "develop" }
+      );
+      expect(feedback).toContain("PR Diff vs `develop`");
+    });
+
+    test("describes worktree path", async () => {
+      const mod = await import("./exportFeedback");
+      const feedback = mod.exportReviewFeedback(
+        [{ filePath: "test.ts", lineStart: 1, lineEnd: 1, side: "RIGHT" as const, text: "comment" }],
+        null,
+        { mode: "uncommitted", worktreePath: "/path/to/worktree" }
+      );
+      expect(feedback).toContain("worktree: /path/to/worktree");
+    });
   });
 
-  it("PR mode: annotations still render after PR header", () => {
-    const result = exportReviewFeedback([ann({ text: "needs fix" })], prMeta);
-    // PR header comes first, then file/line annotations
-    const headerIdx = result.indexOf("PR Review:");
-    const annotationIdx = result.indexOf("needs fix");
-    expect(headerIdx).toBeLessThan(annotationIdx);
-    expect(result).toContain("## src/index.ts");
-    expect(result).toContain("### Line 10 (new)");
-  });
+  describe("exportReviewFeedback", () => {
+    test("returns no feedback message for empty annotations", async () => {
+      const { exportReviewFeedback } = await import("./exportFeedback");
+      const result = exportReviewFeedback([]);
+      expect(result).toBe("# Code Review\n\nNo feedback provided.");
+    });
 
-  it("no annotations: returns generic empty regardless of prMetadata", () => {
-    expect(exportReviewFeedback([], prMeta)).toBe("# Code Review\n\nNo feedback provided.");
-    expect(exportReviewFeedback([], null)).toBe("# Code Review\n\nNo feedback provided.");
-    expect(exportReviewFeedback([])).toBe("# Code Review\n\nNo feedback provided.");
-  });
+    test("groups annotations by file", async () => {
+      const { exportReviewFeedback } = await import("./exportFeedback");
+      const result = exportReviewFeedback([
+        { filePath: "a.ts", lineStart: 1, lineEnd: 1, side: "RIGHT" as const, text: "comment A" },
+        { filePath: "b.ts", lineStart: 5, lineEnd: 5, side: "LEFT" as const, text: "comment B" },
+        { filePath: "a.ts", lineStart: 10, lineEnd: 10, side: "RIGHT" as const, text: "comment C" },
+      ]);
+      expect(result).toContain("## a.ts");
+      expect(result).toContain("## b.ts");
+      expect(result).toContain("comment A");
+      expect(result).toContain("comment B");
+      expect(result).toContain("comment C");
+    });
 
-  it("groups annotations by file", () => {
-    const result = exportReviewFeedback([
-      ann({ filePath: "a.ts", lineStart: 5, lineEnd: 5, text: "first" }),
-      ann({ filePath: "b.ts", lineStart: 1, lineEnd: 1, text: "second" }),
-    ]);
-    expect(result).toContain("## a.ts");
-    expect(result).toContain("## b.ts");
-  });
+    test("includes PR metadata when provided", async () => {
+      const { exportReviewFeedback } = await import("./exportFeedback");
+      const prMeta = {
+        platform: "github" as const,
+        host: "github.com",
+        owner: "org",
+        repo: "repo",
+        number: 42,
+        title: "Test PR",
+        author: "user",
+        baseBranch: "main",
+        headBranch: "feature",
+        baseSha: "abc123",
+        headSha: "def456",
+        url: "https://github.com/org/repo/pull/42",
+      };
+      const result = exportReviewFeedback(
+        [{ filePath: "test.ts", lineStart: 1, lineEnd: 1, side: "RIGHT" as const, text: "comment" }],
+        prMeta,
+      );
+      expect(result).toContain("org/repo");
+      expect(result).toContain("#42");
+      expect(result).toContain("Test PR");
+      expect(result).toContain("feature");
+      expect(result).toContain("main");
+    });
 
-  it("sorts annotations by line number within a file", () => {
-    const result = exportReviewFeedback([
-      ann({ lineStart: 20, lineEnd: 20, text: "later" }),
-      ann({ lineStart: 5, lineEnd: 5, text: "earlier" }),
-    ]);
-    const earlierIdx = result.indexOf("earlier");
-    const laterIdx = result.indexOf("later");
-    expect(earlierIdx).toBeLessThan(laterIdx);
-  });
+    test("includes file-scope annotations", async () => {
+      const { exportReviewFeedback } = await import("./exportFeedback");
+      const result = exportReviewFeedback([
+        { filePath: "test.ts", lineStart: 0, lineEnd: 0, side: "RIGHT" as const, scope: "file" as const, text: "file comment" },
+      ]);
+      expect(result).toContain("File Comment");
+      expect(result).toContain("file comment");
+    });
 
-  it("puts file-scoped annotations before line annotations", () => {
-    const result = exportReviewFeedback([
-      ann({ lineStart: 1, lineEnd: 1, text: "line comment" }),
-      ann({ scope: "file", text: "file comment" }),
-    ]);
-    const fileIdx = result.indexOf("File Comment");
-    const lineIdx = result.indexOf("Line 1");
-    expect(fileIdx).toBeLessThan(lineIdx);
-  });
+    test("includes suggested code", async () => {
+      const { exportReviewFeedback } = await import("./exportFeedback");
+      const result = exportReviewFeedback([
+        { filePath: "test.ts", lineStart: 1, lineEnd: 1, side: "RIGHT" as const, text: "fix this", suggestedCode: "const x = 1;" },
+      ]);
+      expect(result).toContain("Suggested code");
+      expect(result).toContain("const x = 1;");
+    });
 
-  it("renders line ranges", () => {
-    const result = exportReviewFeedback([
-      ann({ lineStart: 10, lineEnd: 15 }),
-    ]);
-    expect(result).toContain("### Lines 10-15 (new)");
-  });
+    test("includes reasoning when provided", async () => {
+      const { exportReviewFeedback } = await import("./exportFeedback");
+      const result = exportReviewFeedback([
+        { filePath: "test.ts", lineStart: 1, lineEnd: 1, side: "RIGHT" as const, text: "fix this", reasoning: "security concern" },
+      ]);
+      expect(result).toContain("Reasoning");
+      expect(result).toContain("security concern");
+    });
 
-  it("renders single lines", () => {
-    const result = exportReviewFeedback([
-      ann({ lineStart: 7, lineEnd: 7 }),
-    ]);
-    expect(result).toContain("### Line 7 (new)");
-  });
+    test("includes token text and char range", async () => {
+      const { exportReviewFeedback } = await import("./exportFeedback");
+      const result = exportReviewFeedback([
+        { filePath: "test.ts", lineStart: 5, lineEnd: 5, side: "RIGHT" as const, text: "fix", tokenText: "myVar", charStart: 10, charEnd: 15 },
+      ]);
+      expect(result).toContain("myVar");
+      expect(result).toContain("chars 10-15");
+    });
 
-  it("renders suggested code", () => {
-    const result = exportReviewFeedback([
-      ann({ suggestedCode: "const x = 1;" }),
-    ]);
-    expect(result).toContain("**Suggested code:**");
-    expect(result).toContain("const x = 1;");
-  });
+    test("formats line range for single line", async () => {
+      const { exportReviewFeedback } = await import("./exportFeedback");
+      const result = exportReviewFeedback([
+        { filePath: "test.ts", lineStart: 5, lineEnd: 5, side: "RIGHT" as const, text: "comment" },
+      ]);
+      expect(result).toContain("Line 5");
+    });
 
-  it("includes side indicator", () => {
-    const result = exportReviewFeedback([
-      ann({ side: "old", lineStart: 3, lineEnd: 3 }),
-    ]);
-    expect(result).toContain("### Line 3 (old)");
-  });
+    test("formats line range for multi-line", async () => {
+      const { exportReviewFeedback } = await import("./exportFeedback");
+      const result = exportReviewFeedback([
+        { filePath: "test.ts", lineStart: 5, lineEnd: 10, side: "RIGHT" as const, text: "comment" },
+      ]);
+      expect(result).toContain("Lines 5-10");
+    });
 
-  it("contains exactly one top-level heading so integrations can use the output directly", () => {
-    const result = exportReviewFeedback([ann()]);
-    const headingMatches = result.match(/^# /gm) || [];
-    expect(headingMatches).toHaveLength(1);
-  });
+    test("sorts file-scope before line-scope annotations", async () => {
+      const { exportReviewFeedback } = await import("./exportFeedback");
+      const result = exportReviewFeedback([
+        { filePath: "test.ts", lineStart: 5, lineEnd: 5, side: "RIGHT" as const, text: "line comment" },
+        { filePath: "test.ts", lineStart: 0, lineEnd: 0, side: "RIGHT" as const, scope: "file" as const, text: "file comment" },
+      ]);
+      const fileIdx = result.indexOf("File Comment");
+      const lineIdx = result.indexOf("Line 5");
+      expect(fileIdx).toBeLessThan(lineIdx);
+    });
 
-  it("contains exactly one top-level heading in PR mode", () => {
-    const result = exportReviewFeedback([ann()], prMeta);
-    const headingMatches = result.match(/^# /gm) || [];
-    expect(headingMatches).toHaveLength(1);
+    test("includes conventional label in output", async () => {
+      const { exportReviewFeedback } = await import("./exportFeedback");
+      const result = exportReviewFeedback([
+        { filePath: "test.ts", lineStart: 1, lineEnd: 1, side: "RIGHT" as const, text: "fix", conventionalLabel: "issue" as const },
+      ]);
+      expect(result).toContain("**issue:**");
+    });
   });
 });

@@ -1,0 +1,40 @@
+wing: plannotator
+rooms:
+- name: apps
+  description: Files from apps/
+  keywords:
+  - apps
+  - apps
+- name: testing
+  description: Files from tests/
+  keywords:
+  - testing
+  - tests
+- name: packages
+  description: Files from packages/
+  keywords:
+  - packages
+  - packages
+- name: flow
+  description: Files from flow/
+  keywords:
+  - flow
+  - flow
+- name: scripts
+  description: Files from scripts/
+  keywords:
+  - scripts
+  - scripts
+- name: frontend
+  description: Files from ui/
+  keywords:
+  - frontend
+  - ui
+- name: backend
+  description: Files from server/
+  keywords:
+  - backend
+  - server
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []

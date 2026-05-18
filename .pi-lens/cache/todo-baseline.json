@@ -1,0 +1,39 @@
+{
+  "items": [
+    {
+      "type": "TODO",
+      "message": "revisit if we want to re-scope plan file locations.",
+      "file": "apps/opencode-plugin/plan-mode.ts",
+      "line": 36,
+      "column": 5
+    },
+    {
+      "type": "TODO",
+      "message": "parse DiffNote positions from notes for thread support",
+      "file": "apps/pi-extension/generated/pr-gitlab.ts",
+      "line": 346,
+      "column": 27
+    },
+    {
+      "type": "TODO",
+      "message": "Replace !!origin with a dedicated isApiMode boolean (set on /api/diff success/failure).",
+      "file": "packages/review-editor/App.tsx",
+      "line": 237,
+      "column": 5
+    },
+    {
+      "type": "TODO",
+      "message": "Implement login",
+      "file": "packages/review-editor/demoData.ts",
+      "line": 85,
+      "column": 8
+    },
+    {
+      "type": "TODO",
+      "message": "parse DiffNote positions from notes for thread support",
+      "file": "packages/shared/pr-gitlab.ts",
+      "line": 345,
+      "column": 27
+    }
+  ]
+}
