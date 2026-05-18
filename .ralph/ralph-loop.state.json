@@ -1,0 +1,22 @@
+{
+  "active": true,
+  "iteration": 1,
+  "minIterations": 1,
+  "maxIterations": 0,
+  "completionPromise": "COMPLETE",
+  "tasksMode": false,
+  "taskPromise": "READY_FOR_NEXT_TASK",
+  "prompt": "config",
+  "startedAt": "2026-04-14T18:31:30.628Z",
+  "pid": 3526510,
+  "pidStartSignature": "3526510:74384265",
+  "model": "",
+  "agent": "opencode",
+  "stallingTimeoutMs": 7200000,
+  "blacklistDurationMs": 28800000,
+  "stallingAction": "stop",
+  "blacklistedAgents": [],
+  "stallRetries": false,
+  "stallRetryMinutes": 15,
+  "fallbackBlacklist": []
+}

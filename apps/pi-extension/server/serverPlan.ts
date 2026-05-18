@@ -147,8 +147,14 @@ export async function startPlanReviewServer(options: {
 		}
 		const payload = `event: decision\ndata: ${JSON.stringify(result)}\n\n`;
 		for (const client of sseClients) {
-			client.write(payload);
-			client.end();
+			try {
+				if (!client.writableEnded && !client.destroyed) {
+					client.write(payload);
+					client.end();
+				}
+			} catch {
+				// Client already disconnected
+			}
 		}
 		sseClients.clear();
 		return true;

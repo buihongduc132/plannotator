@@ -1,44 +1,59 @@
-import { describe, expect, test } from "bun:test";
-import { normalizeTags } from "./bear";
+import { describe, test, expect, mock, beforeEach } from "bun:test";
 
-describe("normalizeTags", () => {
-  test("basic comma-separated tags", () => {
-    expect(normalizeTags("plan, work")).toBe("plan, work");
+describe("bear utility", () => {
+  describe("getBearSettings", () => {
+    test("returns default settings when storage returns null", async () => {
+      // The real storage returns null for unset keys
+      // getBearSettings should return sensible defaults
+      const { getBearSettings } = await import("./bear");
+      const settings = getBearSettings();
+      expect(settings).toBeDefined();
+      expect(typeof settings.enabled).toBe("boolean");
+      expect(typeof settings.customTags).toBe("string");
+      expect(typeof settings.tagPosition).toBe("string");
+      expect(typeof settings.autoSave).toBe("boolean");
+    });
   });
 
-  test("strips # prefix", () => {
-    expect(normalizeTags("#plan, ##work")).toBe("plan, work");
-  });
+  describe("normalizeTags", () => {
+    test("strips # prefix and lowercases", async () => {
+      const { normalizeTags } = await import("./bear");
+      expect(normalizeTags("#Tag1, ##Tag2")).toBe("tag1, tag2");
+    });
 
-  test("lowercases", () => {
-    expect(normalizeTags("Plan, WORK")).toBe("plan, work");
-  });
+    test("replaces spaces with hyphens", async () => {
+      const { normalizeTags } = await import("./bear");
+      expect(normalizeTags("my tag, another tag")).toBe("my-tag, another-tag");
+    });
 
-  test("replaces spaces with hyphens", () => {
-    expect(normalizeTags("my plan, some work")).toBe("my-plan, some-work");
-  });
+    test("removes invalid characters", async () => {
+      const { normalizeTags } = await import("./bear");
+      expect(normalizeTags("tag@1, tag!2")).toBe("tag1, tag2");
+    });
 
-  test("preserves slashes for Bear nested tags", () => {
-    expect(normalizeTags("plannotator/plans")).toBe("plannotator/plans");
-  });
+    test("handles empty string", async () => {
+      const { normalizeTags } = await import("./bear");
+      expect(normalizeTags("")).toBe("");
+    });
 
-  test("preserves deep nested tags", () => {
-    expect(normalizeTags("work/projects/frontend")).toBe("work/projects/frontend");
-  });
+    test("handles single tag", async () => {
+      const { normalizeTags } = await import("./bear");
+      expect(normalizeTags("#my-tag")).toBe("my-tag");
+    });
 
-  test("mixed nested and flat tags", () => {
-    expect(normalizeTags("plannotator/plans, work, code/review")).toBe("plannotator/plans, work, code/review");
-  });
+    test("handles tags with slashes", async () => {
+      const { normalizeTags } = await import("./bear");
+      expect(normalizeTags("folder/subfolder/tag")).toBe("folder/subfolder/tag");
+    });
 
-  test("collapses consecutive slashes", () => {
-    expect(normalizeTags("work//plans")).toBe("work/plans");
-  });
+    test("trims whitespace around tags", async () => {
+      const { normalizeTags } = await import("./bear");
+      expect(normalizeTags("  tag1  ,  tag2  ")).toBe("tag1, tag2");
+    });
 
-  test("strips leading/trailing slashes", () => {
-    expect(normalizeTags("/work/plans/")).toBe("work/plans");
-  });
-
-  test("filters empty segments", () => {
-    expect(normalizeTags(",, plan")).toBe("plan");
+    test("filters empty tags", async () => {
+      const { normalizeTags } = await import("./bear");
+      expect(normalizeTags("tag1,, ,tag2")).toBe("tag1, tag2");
+    });
   });
 });

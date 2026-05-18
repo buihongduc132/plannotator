@@ -243,6 +243,33 @@ describe("plan server integration", () => {
 		}
 	});
 
+	test("decision broadcast handles disconnected SSE clients gracefully", async () => {
+		const server = await startPlanReviewServer({
+			plan: "# SSE Resilience Test",
+			htmlContent: HTML_CONTENT,
+			sharingEnabled: false,
+		});
+		try {
+			// Connect SSE client then abort (simulates disconnect)
+			const controller = new AbortController();
+			setTimeout(() => controller.abort(), 100);
+			await fetch(`http://localhost:${server.port}/api/decision/stream`, { signal: controller.signal }).catch(() => {});
+
+			// Approve should still succeed even though SSE client is gone
+			const decisionPromise = server.waitForDecision();
+			const res = await fetch(`http://localhost:${server.port}/api/approve`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ planSave: { enabled: false } }),
+			});
+			expect(res.status).toBe(200);
+			const decision = await decisionPromise;
+			expect(decision.approved).toBe(true);
+		} finally {
+			server.stop();
+		}
+	});
+
 	test("onDecision listener receives result", async () => {
 		const server = await startPlanReviewServer({
 			plan: "# Listener Test",

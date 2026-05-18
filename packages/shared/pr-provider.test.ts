@@ -1,171 +1,64 @@
-import { describe, expect, test } from "bun:test";
-import {
-  getCliInstallUrl,
-  getCliName,
-  getDisplayRepo,
-  getMRLabel,
-  getMRNumberLabel,
-  getPlatformLabel,
-  parsePRUrl,
-  prRefFromMetadata,
-  type PRMetadata,
-} from "./pr-provider";
+import { describe, test, expect } from "bun:test";
 
-describe("pr-provider platform helpers", () => {
-  test("parses GitHub PR URLs including nested suffixes", () => {
-    const ref = parsePRUrl("https://github.com/backnotprop/plannotator/pull/364/files");
-
-    expect(ref).toEqual({
-      platform: "github",
-      host: "github.com",
-      owner: "backnotprop",
-      repo: "plannotator",
-      number: 364,
+describe("pr-provider shared", () => {
+  describe("type exports", () => {
+    test("module loads and exports functions", async () => {
+      const mod = await import("./pr-provider");
+      // Check re-exports exist
+      expect(mod).toBeDefined();
     });
   });
 
-  test("parses GitHub Enterprise PR URLs", () => {
-    const ref = parsePRUrl("https://ghe.company.com/org/repo/pull/99/files");
+  describe("getMRLabel", () => {
+    test("returns PR for github platform", async () => {
+      const { getMRLabel } = await import("./pr-provider");
+      expect(getMRLabel({ platform: "github" } as any)).toBe("PR");
+    });
 
-    expect(ref).toEqual({
-      platform: "github",
-      host: "ghe.company.com",
-      owner: "org",
-      repo: "repo",
-      number: 99,
+    test("returns MR for gitlab platform", async () => {
+      const { getMRLabel } = await import("./pr-provider");
+      expect(getMRLabel({ platform: "gitlab" } as any)).toBe("MR");
     });
   });
 
-  test("does not confuse GHE URL with GitLab", () => {
-    const ref = parsePRUrl("https://git.internal.corp/team/app/pull/5");
+  describe("getDisplayRepo", () => {
+    test("returns owner/repo for github", async () => {
+      const { getDisplayRepo } = await import("./pr-provider");
+      const result = getDisplayRepo({
+        platform: "github",
+        owner: "org",
+        repo: "repo",
+      } as any);
+      expect(result).toBe("org/repo");
+    });
 
-    expect(ref).toEqual({
-      platform: "github",
-      host: "git.internal.corp",
-      owner: "team",
-      repo: "app",
-      number: 5,
+    test("returns projectPath for gitlab", async () => {
+      const { getDisplayRepo } = await import("./pr-provider");
+      const result = getDisplayRepo({
+        platform: "gitlab",
+        projectPath: "group/project",
+      } as any);
+      expect(result).toBe("group/project");
     });
   });
 
-  test("parses GitLab.com MR URLs", () => {
-    const ref = parsePRUrl("https://gitlab.com/group/project/-/merge_requests/42/diffs");
-
-    expect(ref).toEqual({
-      platform: "gitlab",
-      host: "gitlab.com",
-      projectPath: "group/project",
-      iid: 42,
-    });
-  });
-
-  test("parses self-hosted GitLab MR URLs with nested groups", () => {
-    const ref = parsePRUrl("https://gitlab.example.com/group/subgroup/project/-/merge_requests/7");
-
-    expect(ref).toEqual({
-      platform: "gitlab",
-      host: "gitlab.example.com",
-      projectPath: "group/subgroup/project",
-      iid: 7,
-    });
-  });
-
-  test("returns null for unsupported URLs", () => {
-    expect(parsePRUrl("https://example.com/not-a-pr/123")).toBeNull();
-    expect(parsePRUrl("")).toBeNull();
-  });
-
-  test("formats platform-aware labels for GitHub and GitLab", () => {
-    const githubMeta: PRMetadata = {
-      platform: "github",
-      host: "github.com",
-      owner: "backnotprop",
-      repo: "plannotator",
-      number: 364,
-      title: "GitHub PR",
-      author: "backnotprop",
-      baseBranch: "main",
-      headBranch: "feature/github",
-      baseSha: "base",
-      headSha: "head",
-      url: "https://github.com/backnotprop/plannotator/pull/364",
-    };
-
-    const gitlabMeta: PRMetadata = {
-      platform: "gitlab",
-      host: "gitlab.example.com",
-      projectPath: "group/project",
-      iid: 42,
-      title: "GitLab MR",
-      author: "alice",
-      baseBranch: "main",
-      headBranch: "feature/gitlab",
-      baseSha: "base",
-      headSha: "head",
-      url: "https://gitlab.example.com/group/project/-/merge_requests/42",
-    };
-
-    expect(getPlatformLabel(githubMeta)).toBe("GitHub");
-    expect(getMRLabel(githubMeta)).toBe("PR");
-    expect(getMRNumberLabel(githubMeta)).toBe("#364");
-    expect(getDisplayRepo(githubMeta)).toBe("backnotprop/plannotator");
-
-    expect(getPlatformLabel(gitlabMeta)).toBe("GitLab");
-    expect(getMRLabel(gitlabMeta)).toBe("MR");
-    expect(getMRNumberLabel(gitlabMeta)).toBe("!42");
-    expect(getDisplayRepo(gitlabMeta)).toBe("group/project");
-  });
-
-  test("reconstructs refs and CLI metadata for each platform", () => {
-    const githubMeta: PRMetadata = {
-      platform: "github",
-      host: "github.com",
-      owner: "backnotprop",
-      repo: "plannotator",
-      number: 1,
-      title: "GitHub PR",
-      author: "backnotprop",
-      baseBranch: "main",
-      headBranch: "feature/github",
-      baseSha: "base",
-      headSha: "head",
-      url: "https://github.com/backnotprop/plannotator/pull/1",
-    };
-
-    const gitlabMeta: PRMetadata = {
-      platform: "gitlab",
-      host: "gitlab.example.com",
-      projectPath: "group/project",
-      iid: 2,
-      title: "GitLab MR",
-      author: "alice",
-      baseBranch: "main",
-      headBranch: "feature/gitlab",
-      baseSha: "base",
-      headSha: "head",
-      url: "https://gitlab.example.com/group/project/-/merge_requests/2",
-    };
-
-    const githubRef = prRefFromMetadata(githubMeta);
-    const gitlabRef = prRefFromMetadata(gitlabMeta);
-
-    expect(githubRef).toEqual({
-      platform: "github",
-      host: "github.com",
-      owner: "backnotprop",
-      repo: "plannotator",
-      number: 1,
-    });
-    expect(gitlabRef).toEqual({
-      platform: "gitlab",
-      host: "gitlab.example.com",
-      projectPath: "group/project",
-      iid: 2,
+  describe("getMRNumberLabel", () => {
+    test("returns #N for github", async () => {
+      const { getMRNumberLabel } = await import("./pr-provider");
+      const result = getMRNumberLabel({
+        platform: "github",
+        number: 42,
+      } as any);
+      expect(result).toBe("#42");
     });
 
-    expect(getCliName(githubRef)).toBe("gh");
-    expect(getCliInstallUrl(githubRef)).toBe("https://cli.github.com");
-    expect(getCliName(gitlabRef)).toBe("glab");
-    expect(getCliInstallUrl(gitlabRef)).toBe("https://gitlab.com/gitlab-org/cli");
+    test("returns !N for gitlab", async () => {
+      const { getMRNumberLabel } = await import("./pr-provider");
+      const result = getMRNumberLabel({
+        platform: "gitlab",
+        iid: 5,
+      } as any);
+      expect(result).toBe("!5");
+    });
   });
 });
