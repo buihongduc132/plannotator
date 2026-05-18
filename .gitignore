@@ -68,6 +68,21 @@ target/
 dist/
 build/
 
+# Secrets & credentials — NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.secret
+*.token
+auth.json
+credentials.json
+secrets/
+.abw/
+
 # Local tool state
 .acpx-ralph/
 .gitnexus/
@@ -79,3 +94,5 @@ mempalace.yaml
 home/
 _GOAL_multiple-session.md
 _empty.md
+.fusion
+.pi
