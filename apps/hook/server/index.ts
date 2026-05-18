@@ -93,7 +93,7 @@ import {
 } from "./session-log";
 import { findCodexRolloutByThreadId, getLastCodexMessage } from "./codex-session";
 import { findCopilotPlanContent, findCopilotSessionForCwd, getLastCopilotMessage } from "./copilot-session";
-import { createSessionState, registerSession as registerRegistrySession, unregisterSession as unregisterRegistrySession } from "./session-registry";
+import { createSessionState, registerSession as registerRegistrySession, unregisterSession as unregisterRegistrySession, publishDecision } from "./session-registry";
 import {
   formatInteractiveNoArgClarification,
   formatTopLevelHelp,
@@ -1031,21 +1031,24 @@ if (args[0] === "sessions") {
     port,
     project: planProject,
     mode: "plan",
+    sharingEnabled,
+    shareBaseUrl,
+    pasteApiUrl: process.env.PLANNOTATOR_PASTE_URL || "https://plannotator-paste.plannotator.workers.dev",
   });
   registerRegistrySession(planSessionId!, registryState);
 
   const decision = await waitForDecision(planSessionId!);
 
   if (decision.approved) {
-    registryState.transition("approve");
+    publishDecision(registryState, { approved: true, feedback: undefined });
     unregisterRegistrySession(planSessionId!);
     console.log("The user approved.");
   } else if (decision.feedback) {
-    registryState.transition("deny");
+    publishDecision(registryState, { approved: false, feedback: decision.feedback });
     unregisterRegistrySession(planSessionId!);
     console.log(decision.feedback);
   } else {
-    registryState.transition("dismiss");
+    publishDecision(registryState, { approved: false, feedback: undefined });
     unregisterRegistrySession(planSessionId!);
   }
   // dismissed — emit nothing so slash command interprets as case 2

@@ -169,12 +169,13 @@ export function createSessionState(options: {
 	filePath?: string;
 	sourceInfo?: string;
 	gate?: boolean;
+	project?: string;
 }): SessionContext {
 	const sessionId = options.sessionId || randomUUID();
 	const isArchive = options.mode === "archive";
 	const isAnnotate = options.mode === "annotate" || options.mode === "annotate-last";
 	const slug = !isArchive && !isAnnotate ? generateSlug(options.plan) : "";
-	const project = "_unknown"; // sync fallback; caller sets via detectProjectName()
+	const project = options.project || "_unknown";
 
 	let version = 0;
 	let totalVersions = 0;
