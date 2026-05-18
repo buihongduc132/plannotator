@@ -44,9 +44,10 @@ import {
 	handleImageRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { detectWSL, html, json, parseBody, requestUrl, toWebRequest } from "./helpers.js";
+import { detectWSL, extractSessionSlug, html, injectSessionPath, json, parseBody, requestUrl, toWebRequest } from "./helpers.js";
 
 import { isRemoteSession, listenOnPort } from "./network.js";
+
 import {
 	fetchPRContext,
 	fetchPRFileContent,
@@ -388,6 +389,17 @@ export async function startReviewServer(options: {
 				},
 				403,
 			);
+			return;
+		}
+		// REQ-14: Bare /s/{sessionId} path (SPA navigation) — inject session base
+		// and serve HTML. Only reject if the slug doesn't match our session.
+		if (sessionId && !routeSessionId && apiPath.startsWith("/s/")) {
+			const slug = extractSessionSlug(url.pathname);
+			if (slug && slug !== sessionId) {
+				json(res, { error: "Session mismatch", message: `URL session "${slug}" does not match expected "${sessionId}"` }, 403);
+				return;
+			}
+			html(res, injectSessionPath(options.htmlContent, sessionId));
 			return;
 		}
 

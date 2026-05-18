@@ -10,7 +10,7 @@ import {
 	handleImageRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { detectWSL, html, json, parseBody, requestUrl } from "./helpers.js";
+import { detectWSL, extractSessionSlug, html, injectSessionPath, json, parseBody, requestUrl } from "./helpers.js";
 
 import { listenOnPort } from "./network.js";
 
@@ -101,8 +101,15 @@ export async function startAnnotateServer(options: {
 			);
 			return;
 		}
-		if (sessionId && apiPath.startsWith("/s/")) {
-			json(res, { error: "Session mismatch" }, 403);
+		// REQ-14: Bare /s/{sessionId} path (SPA navigation) — inject session base
+		// and serve HTML. Only reject if the slug doesn't match our session.
+		if (sessionId && !routeSessionId && apiPath.startsWith("/s/")) {
+			const slug = extractSessionSlug(url.pathname);
+			if (slug && slug !== sessionId) {
+				json(res, { error: "Session mismatch", message: `URL session "${slug}" does not match expected "${sessionId}"` }, 403);
+				return;
+			}
+			html(res, injectSessionPath(options.htmlContent, sessionId));
 			return;
 		}
 

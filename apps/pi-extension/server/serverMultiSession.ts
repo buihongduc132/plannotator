@@ -24,34 +24,9 @@ import {
 import { listArchivedPlans, readArchivedPlan } from "../generated/storage.js";
 import { detectProjectName } from "./project.js";
 import { handleFavicon, handleImageRequest, handleUploadRequest } from "./handlers.js";
-import { html, json, parseBody, requestUrl } from "./helpers.js";
+import { extractSessionSlug, html, injectSessionPath, json, parseBody, requestUrl } from "./helpers.js";
 import { buildServerUrl, getServerHost, getServerPort, isRemoteSession, listenOnPort, openBrowser } from "./network.js";
 import { handleDocRequest, handleFileBrowserRequest, handleObsidianDocRequest, handleObsidianFilesRequest, handleObsidianVaultsRequest } from "./reference.js";
-
-/**
- * Regex to extract slug from bare session paths: /s/<slug> or /s/<slug>/anything
- */
-const BARE_SESSION_SLUG_REGEX = /^\/s\/([^/]+)(?:\/.*)?$/;
-
-/**
- * Extract session slug from any /s/<slug>... path.
- */
-function extractSessionSlug(pathname: string): string | null {
-	const match = BARE_SESSION_SLUG_REGEX.exec(pathname);
-	return match ? match[1] : null;
-}
-
-/**
- * Inject session base path into HTML so client-side fetch('/api/...') resolves correctly.
- * Uses lastIndexOf for </head> because the bundled JS (DOMPurify source) contains that literal.
- */
-function injectSessionPath(htmlContent: string, slug: string): string {
-	if (!htmlContent) return htmlContent;
-	const headCloseIdx = htmlContent.lastIndexOf("</head>");
-	if (headCloseIdx === -1) return htmlContent;
-	const injection = `<script>window.__PLANNOTATOR_SESSION_PATH__="/s/${slug}"<` + `/script>`;
-	return htmlContent.slice(0, headCloseIdx) + injection + htmlContent.slice(headCloseIdx);
-}
 
 export interface MultiSessionPlanResult {
 	reviewId: string;

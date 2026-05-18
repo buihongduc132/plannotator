@@ -105,3 +105,24 @@ export function toWebRequest(req: IncomingMessage): Request {
 
 	return new Request(`http://localhost${req.url ?? "/"}`, init);
 }
+
+/** Regex to extract slug from bare session paths: /s/<slug> or /s/<slug>/anything */
+const BARE_SESSION_SLUG_REGEX = /^\/s\/([^/]+)(?:\/.*)?$/;
+
+export function extractSessionSlug(pathname: string): string | null {
+	const match = BARE_SESSION_SLUG_REGEX.exec(pathname);
+	return match ? match[1] : null;
+}
+
+/** Inject session base path into HTML for client-side routing.
+ *  Uses case-insensitive search for the LAST </head> occurrence to avoid
+ *  injecting into inline script content that may contain the literal. */
+export function injectSessionPath(htmlContent: string, slug: string): string {
+	if (!htmlContent) return htmlContent;
+	// Find the last </head> occurrence (case-insensitive)
+	const lower = htmlContent.toLowerCase();
+	const headCloseIdx = lower.lastIndexOf("</head>");
+	if (headCloseIdx === -1) return htmlContent;
+	const injection = `<script>window.__PLANNOTATOR_SESSION_PATH__="/s/${slug}"<` + `/script>`;
+	return htmlContent.slice(0, headCloseIdx) + injection + htmlContent.slice(headCloseIdx);
+}
