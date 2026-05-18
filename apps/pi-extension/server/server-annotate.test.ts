@@ -65,7 +65,7 @@ async function startAnnotateServer(opts: { sessionId?: string; gate?: boolean } 
 	const server = await start({
 		markdown: "# Test Document\n\nSome content to annotate.",
 		filePath: mdFile,
-		htmlContent: "<!doctype html><html><body>annotate</body></html>",
+		htmlContent: "<!doctype html><html><head></head><body>annotate</body></html>",
 		origin: "pi",
 		sessionId: opts.sessionId,
 		gate: opts.gate,
@@ -190,6 +190,40 @@ describe("Annotate server — session routing", () => {
 			expect(res.status).toBe(200);
 			const data = await res.json() as any;
 			expect(data.plan).toContain("Test Document");
+		} finally { server.stop(); }
+	});
+
+	test("bare /s/{sessionId} serves HTML with session path injection", async () => {
+		const server = await startAnnotateServer({ sessionId: "my-session" });
+		const baseUrl = server.url.replace(/\/s\/.*$/, "");
+		try {
+			const res = await fetch(`${baseUrl}/s/my-session`);
+			expect(res.status).toBe(200);
+			const html = await res.text();
+			expect(html).toContain("annotate");
+			expect(html).toContain('__PLANNOTATOR_SESSION_PATH__="/s/my-session"');
+		} finally { server.stop(); }
+	});
+
+	test("bare /s/{wrongId} returns 403", async () => {
+		const server = await startAnnotateServer({ sessionId: "my-session" });
+		const baseUrl = server.url.replace(/\/s\/.*$/, "");
+		try {
+			const res = await fetch(`${baseUrl}/s/wrong-session`);
+			expect(res.status).toBe(403);
+			const data = await res.json() as any;
+			expect(data.error).toContain("Session mismatch");
+		} finally { server.stop(); }
+	});
+
+	test("bare /s/{sessionId}/ with trailing slash serves HTML", async () => {
+		const server = await startAnnotateServer({ sessionId: "my-session" });
+		const baseUrl = server.url.replace(/\/s\/.*$/, "");
+		try {
+			const res = await fetch(`${baseUrl}/s/my-session/`);
+			expect(res.status).toBe(200);
+			const html = await res.text();
+			expect(html).toContain('__PLANNOTATOR_SESSION_PATH__="/s/my-session"');
 		} finally { server.stop(); }
 	});
 });

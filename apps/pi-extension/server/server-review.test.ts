@@ -113,7 +113,7 @@ async function startReview(opts: {
 	const server = await startReviewServer({
 		rawPatch: patch,
 		gitRef: "main",
-		htmlContent: "<!doctype html><html><body>review</body></html>",
+		htmlContent: "<!doctype html><html><head></head><body>review</body></html>",
 		origin: "pi",
 		diffType: (opts.diffType as any) || "uncommitted",
 		gitContext: opts.noLocalAccess ? undefined : gitContext,
@@ -511,7 +511,7 @@ describe("Review server — onReady callback", () => {
 		const server = await startReviewServer({
 			rawPatch: diffResult.stdout || "",
 			gitRef: "main",
-			htmlContent: "<!doctype html><html><body>review</body></html>",
+			htmlContent: "<!doctype html><html><head></head><body>review</body></html>",
 			origin: "pi",
 			onReady: (url, isRemote, port) => {
 				readyCalled = true;
@@ -544,7 +544,7 @@ describe("Review server — onReady callback", () => {
 		const server = await startReviewServer({
 			rawPatch: diffResult.stdout || "",
 			gitRef: "main",
-			htmlContent: "<!doctype html><html><body>review</body></html>",
+			htmlContent: "<!doctype html><html><head></head><body>review</body></html>",
 			origin: "pi",
 			onCleanup: () => { cleanedUp = true; },
 		});
@@ -568,6 +568,40 @@ describe("Review server — session routing", () => {
 		try {
 			const res = await fetch(`${server.url}/api/diff`);
 			expect(res.status).toBe(200);
+		} finally { server.stop(); }
+	});
+
+	test("bare /s/{sessionId} serves HTML with session path injection", async () => {
+		const server = await startReview({ sessionId: "my-session" });
+		const baseUrl = server.url.replace(/\/s\/.*$/, "");
+		try {
+			const res = await fetch(`${baseUrl}/s/my-session`);
+			expect(res.status).toBe(200);
+			const html = await res.text();
+			expect(html).toContain('review');
+			expect(html).toContain('__PLANNOTATOR_SESSION_PATH__="/s/my-session"');
+		} finally { server.stop(); }
+	});
+
+	test("bare /s/{wrongId} returns 403", async () => {
+		const server = await startReview({ sessionId: "my-session" });
+		const baseUrl = server.url.replace(/\/s\/.*$/, "");
+		try {
+			const res = await fetch(`${baseUrl}/s/wrong-session`);
+			expect(res.status).toBe(403);
+			const data = await res.json() as any;
+			expect(data.error).toContain("Session mismatch");
+		} finally { server.stop(); }
+	});
+
+	test("bare /s/{sessionId}/ with trailing slash serves HTML", async () => {
+		const server = await startReview({ sessionId: "my-session" });
+		const baseUrl = server.url.replace(/\/s\/.*$/, "");
+		try {
+			const res = await fetch(`${baseUrl}/s/my-session/`);
+			expect(res.status).toBe(200);
+			const html = await res.text();
+			expect(html).toContain('__PLANNOTATOR_SESSION_PATH__="/s/my-session"');
 		} finally { server.stop(); }
 	});
 });

@@ -348,8 +348,8 @@ export async function startAnnotateServer(
           if (url.pathname === "/favicon.svg") return handleFavicon();
 
           // API routes that fell through should 404
-          if (url.pathname.startsWith("/api/")) {
-            return Response.json({ error: "Not found", path: url.pathname }, { status: 404 });
+          if (apiPath.startsWith("/api/")) {
+            return Response.json({ error: "Not found", path: apiPath }, { status: 404 });
           }
 
           // Serve embedded HTML for all other routes (SPA)
