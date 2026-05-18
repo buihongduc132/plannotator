@@ -115,10 +115,13 @@ export function extractSessionSlug(pathname: string): string | null {
 }
 
 /** Inject session base path into HTML for client-side routing.
- *  Uses case-insensitive search for </head> to handle varied HTML sources. */
+ *  Uses case-insensitive search for the LAST </head> occurrence to avoid
+ *  injecting into inline script content that may contain the literal. */
 export function injectSessionPath(htmlContent: string, slug: string): string {
 	if (!htmlContent) return htmlContent;
-	const headCloseIdx = htmlContent.search(/<\/head>/i);
+	// Find the last </head> occurrence (case-insensitive)
+	const lower = htmlContent.toLowerCase();
+	const headCloseIdx = lower.lastIndexOf("</head>");
 	if (headCloseIdx === -1) return htmlContent;
 	const injection = `<script>window.__PLANNOTATOR_SESSION_PATH__="/s/${slug}"<` + `/script>`;
 	return htmlContent.slice(0, headCloseIdx) + injection + htmlContent.slice(headCloseIdx);
