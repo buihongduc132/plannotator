@@ -1,8 +1,36 @@
 import { describe, expect, test, afterAll, beforeAll } from "bun:test";
+import { createServer as createNetServer } from "node:net";
 import { startPlanReviewServer } from "./serverPlan";
 
 const HTML_CONTENT = "<!DOCTYPE html><html><body>plan</body></html>";
 const PLAN = "# Test Plan\n\n1. Step one\n2. Step two";
+const originalRemote = process.env.PLANNOTATOR_REMOTE;
+const originalPort = process.env.PLANNOTATOR_PORT;
+
+function reservePort(): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const srv = createNetServer();
+		srv.once("error", reject);
+		srv.listen(0, "127.0.0.1", () => {
+			const addr = srv.address();
+			if (!addr || typeof addr === "string") { srv.close(); reject(new Error("no port")); return; }
+			const { port } = addr;
+			srv.close((e) => (e ? reject(e) : resolve(port)));
+		});
+	});
+}
+
+// Ensure tests don't use remote mode (port 19432)
+beforeAll(() => {
+	process.env.PLANNOTATOR_REMOTE = "false";
+});
+
+afterAll(() => {
+	if (originalRemote === undefined) delete process.env.PLANNOTATOR_REMOTE;
+	else process.env.PLANNOTATOR_REMOTE = originalRemote;
+	if (originalPort === undefined) delete process.env.PLANNOTATOR_PORT;
+	else process.env.PLANNOTATOR_PORT = originalPort;
+});
 
 describe("plan server integration", () => {
 	let result: Awaited<ReturnType<typeof startPlanReviewServer>>;
@@ -126,6 +154,7 @@ describe("plan server integration", () => {
 	});
 
 	test("POST /api/approve resolves decision as approved", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const server = await startPlanReviewServer({
 			plan: "# Approve Test Plan",
 			htmlContent: HTML_CONTENT,
@@ -148,6 +177,7 @@ describe("plan server integration", () => {
 	});
 
 	test("POST /api/deny resolves decision as denied", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const server = await startPlanReviewServer({
 			plan: "# Deny Test Plan",
 			htmlContent: HTML_CONTENT,
@@ -170,6 +200,7 @@ describe("plan server integration", () => {
 	});
 
 	test("duplicate approve returns ok with duplicate flag", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const server = await startPlanReviewServer({
 			plan: "# Dup Test Plan",
 			htmlContent: HTML_CONTENT,
@@ -196,6 +227,7 @@ describe("plan server integration", () => {
 	});
 
 	test("POST /api/approve with agentSwitch includes it in decision", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const server = await startPlanReviewServer({
 			plan: "# Agent Switch Plan",
 			htmlContent: HTML_CONTENT,
@@ -227,6 +259,7 @@ describe("plan server integration", () => {
 	});
 
 	test("archive mode returns archive plans", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const server = await startPlanReviewServer({
 			plan: "",
 			htmlContent: HTML_CONTENT,
@@ -244,6 +277,7 @@ describe("plan server integration", () => {
 	});
 
 	test("decision broadcast handles disconnected SSE clients gracefully", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const server = await startPlanReviewServer({
 			plan: "# SSE Resilience Test",
 			htmlContent: HTML_CONTENT,
@@ -271,6 +305,7 @@ describe("plan server integration", () => {
 	});
 
 	test("onDecision listener receives result", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const server = await startPlanReviewServer({
 			plan: "# Listener Test",
 			htmlContent: HTML_CONTENT,

@@ -1,10 +1,26 @@
 import { describe, expect, test, afterAll, beforeAll } from "bun:test";
+import { createServer as createNetServer } from "node:net";
 import { startPlanReviewServer } from "./serverPlan";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const HTML = "<!DOCTYPE html><html><body>x</body></html>";
+const originalRemote = process.env.PLANNOTATOR_REMOTE;
+const originalPort = process.env.PLANNOTATOR_PORT;
+
+function reservePort(): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const srv = createNetServer();
+		srv.once("error", reject);
+		srv.listen(0, "127.0.0.1", () => {
+			const addr = srv.address();
+			if (!addr || typeof addr === "string") { srv.close(); reject(new Error("no port")); return; }
+			const { port } = addr;
+			srv.close((e) => (e ? reject(e) : resolve(port)));
+		});
+	});
+}
 
 // Helper to make temp markdown file
 function makeTempMd(content: string): string {
@@ -20,6 +36,8 @@ describe("plan server — coverage expansion", () => {
 	let url: string;
 
 	beforeAll(async () => {
+		process.env.PLANNOTATOR_REMOTE = "false";
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		server = await startPlanReviewServer({
 			plan: "# Coverage Plan\n\nDetails here",
 			htmlContent: HTML,
@@ -29,7 +47,13 @@ describe("plan server — coverage expansion", () => {
 		url = `http://localhost:${server.port}`;
 	});
 
-	afterAll(() => server.stop());
+	afterAll(() => {
+		server.stop();
+		if (originalRemote === undefined) delete process.env.PLANNOTATOR_REMOTE;
+		else process.env.PLANNOTATOR_REMOTE = originalRemote;
+		if (originalPort === undefined) delete process.env.PLANNOTATOR_PORT;
+		else process.env.PLANNOTATOR_PORT = originalPort;
+	});
 
 	test("POST /api/config saves displayName", async () => {
 		const res = await fetch(`${url}/api/config`, {
@@ -86,6 +110,7 @@ describe("plan server — coverage expansion", () => {
 	});
 
 	test("POST /api/deny with default feedback", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const s = await startPlanReviewServer({
 			plan: "# Deny Default",
 			htmlContent: HTML,
@@ -108,6 +133,7 @@ describe("plan server — coverage expansion", () => {
 	});
 
 	test("POST /api/deny duplicate returns duplicate flag", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const s = await startPlanReviewServer({
 			plan: "# Deny Dup",
 			htmlContent: HTML,
@@ -132,6 +158,7 @@ describe("plan server — coverage expansion", () => {
 	});
 
 	test("POST /api/approve with planSave enabled saves snapshot", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const s = await startPlanReviewServer({
 			plan: "# Save Snapshot Test",
 			htmlContent: HTML,
@@ -155,6 +182,7 @@ describe("plan server — coverage expansion", () => {
 	});
 
 	test("POST /api/approve with obsidian/bear/octarine integrations", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const s = await startPlanReviewServer({
 			plan: "# Integration Test",
 			htmlContent: HTML,
@@ -180,6 +208,7 @@ describe("plan server — coverage expansion", () => {
 	});
 
 	test("GET /api/decision after approval returns result", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const s = await startPlanReviewServer({
 			plan: "# Decision Result",
 			htmlContent: HTML,
@@ -219,6 +248,7 @@ describe("plan server — coverage expansion", () => {
 	});
 
 	test("POST /api/done in archive mode resolves waitForDone", async () => {
+		process.env.PLANNOTATOR_PORT = String(await reservePort());
 		const s = await startPlanReviewServer({
 			plan: "",
 			htmlContent: HTML,

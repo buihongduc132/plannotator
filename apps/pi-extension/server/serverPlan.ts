@@ -9,6 +9,7 @@ import {
 	getPlanVersionPath,
 	getVersionCount,
 	listArchivedPlans,
+	listProjectPlans,
 	listVersions,
 	readArchivedPlan,
 	saveAnnotations,
@@ -135,12 +136,14 @@ export async function startPlanReviewServer(options: {
 	let resolveDecision!: (result: PlanReviewDecision) => void;
 	const decisionListeners = new Set<(result: PlanReviewDecision) => void | Promise<void>>();
 	let decisionSettled = false;
+	let decisionResult: PlanReviewDecision | null = null;
 	const decisionPromise = new Promise<PlanReviewDecision>((r) => {
 		resolveDecision = r;
 	});
 	const publishDecision = (result: PlanReviewDecision): boolean => {
 		if (decisionSettled) return false;
 		decisionSettled = true;
+		decisionResult = result;
 		resolveDecision(result);
 		for (const listener of decisionListeners) {
 			Promise.resolve(listener(result)).catch((error) => {
@@ -361,6 +364,85 @@ export async function startPlanReviewServer(options: {
 				return;
 			}
 			json(res, { ok: true, results });
+		} else if (url.pathname === "/api/decision" && req.method === "GET") {
+			// Decision polling endpoint for remote clients
+			if (decisionResult) {
+				json(res, decisionResult);
+			} else {
+				json(res, { pending: true });
+			}
+		} else if (url.pathname === "/api/decision/stream" && req.method === "GET") {
+			// Decision SSE stream for real-time notification
+			res.writeHead(200, {
+				"Content-Type": "text/event-stream",
+				"Cache-Control": "no-cache",
+				"Connection": "keep-alive",
+			});
+			const encoder = new TextEncoder();
+			const send = (event: string, data: unknown) => {
+				try {
+					res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+				} catch { /* stream already closed */ }
+			};
+			send("connected", { sessionId: reviewId });
+			if (decisionResult) {
+				send("decision", decisionResult);
+				res.end();
+			} else {
+				const interval = setInterval(() => {
+					if (decisionResult) {
+						clearInterval(interval);
+						send("decision", decisionResult);
+						try { res.end(); } catch { /* already closed */ }
+					}
+				}, 200);
+				req.on("close", () => {
+					clearInterval(interval);
+				});
+			}
+		} else if (url.pathname === "/api/sessions" && req.method === "GET") {
+			// List sessions (single-session: just the current one)
+			const addr = server.address();
+			const serverPort = addr && typeof addr === 'object' ? addr.port : 0;
+			json(res, {
+				sessions: [{
+					sessionId: reviewId,
+					mode: options.mode ?? "plan",
+					origin: options.origin ?? "pi",
+					project,
+					slug,
+					name: null,
+					cwd: process.cwd(),
+					url: `http://localhost:${serverPort}`,
+				}],
+				count: 1,
+			});
+		} else if (url.pathname === "/api/sessions" && req.method === "POST") {
+			// Create a new session — single-session server returns the current one
+			const addr = server.address();
+			const serverPort = addr && typeof addr === 'object' ? addr.port : 0;
+			try {
+				const body = await parseBody(req) as { plan?: string; name?: string };
+				if (!body.plan) {
+					json(res, { error: "plan is required" }, 400);
+					return;
+				}
+				// In single-session mode, we just return the existing session
+				json(res, {
+					sessionId: reviewId,
+					url: `http://localhost:${serverPort}/s/${reviewId}`,
+					plan: body.plan.slice(0, 200),
+					name: body.name ?? null,
+					mode: options.mode ?? "plan",
+					project,
+					slug,
+				});
+			} catch {
+				json(res, { error: "Invalid request" }, 400);
+			}
+		} else if (url.pathname === "/api/plans" && req.method === "GET") {
+			// List plan history
+			json(res, { plans: listProjectPlans(project).map((e: any) => ({ ...e, project })) });
 		} else if (url.pathname === "/api/approve" && req.method === "POST") {
 			if (decisionSettled) {
 				json(res, { ok: true, duplicate: true });
