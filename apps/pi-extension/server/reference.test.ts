@@ -57,12 +57,14 @@ describe("handleDocRequest", () => {
 		expect(parseData(res).error).toContain("not found");
 	});
 
-	test("returns 404 for non-markdown file extension", () => {
+	test("returns 200 for code file (.ts) extension", async () => {
 		const res = mockRes();
 		const testPath = import.meta.path.replace(/\.test\.ts$/, ".ts");
-		handleDocRequest(res, new URL(`http://localhost/api/doc?path=${testPath}`));
-		// .ts files are not recognized as markdown — resolveMarkdownFile won't find them
-		expect(res.statusCode).toBe(404);
+		await handleDocRequest(res, new URL(`http://localhost/api/doc?path=${testPath}`));
+		// .ts files are now recognized as code files and served with syntax highlighting
+		expect(res.statusCode).toBe(200);
+		const data = parseData(res);
+		expect(data.codeFile).toBe(true);
 	});
 
 	test("resolves markdown file via base directory", () => {

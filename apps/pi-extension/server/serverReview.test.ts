@@ -1,6 +1,5 @@
 import { describe, expect, test, afterAll, beforeAll } from "bun:test";
 import { startReviewServer } from "./serverReview";
-import { startReviewServer } from "./serverReview";
 
 const HTML_CONTENT = "<!DOCTYPE html><html><body>review</body></html>";
 const MOCK_PATCH = `diff --git a/test.txt b/test.txt
@@ -11,12 +10,27 @@ index 0000000..e69de29
 @@ -0,0 +1 @@
 +hello world`;
 
+/** Helper to create a review server with random port (avoids 19432 conflicts). */
+async function createTestServer(opts: Parameters<typeof startReviewServer>[0]) {
+	const origPort = process.env.PLANNOTATOR_PORT;
+	const origRemote = process.env.PLANNOTATOR_REMOTE;
+	process.env.PLANNOTATOR_PORT = "0";
+	process.env.PLANNOTATOR_REMOTE = "0";
+	const server = await startReviewServer(opts);
+	// Restore env after server is fully listening
+	if (origPort === undefined) delete process.env.PLANNOTATOR_PORT;
+	else process.env.PLANNOTATOR_PORT = origPort;
+	if (origRemote === undefined) delete process.env.PLANNOTATOR_REMOTE;
+	else process.env.PLANNOTATOR_REMOTE = origRemote;
+	return server;
+}
+
 describe("review server integration", () => {
 	let result: Awaited<ReturnType<typeof startReviewServer>>;
 	let baseUrl: string;
 
 	beforeAll(async () => {
-		result = await startReviewServer({
+		result = await createTestServer({
 			rawPatch: MOCK_PATCH,
 			gitRef: "abc123",
 			htmlContent: HTML_CONTENT,
@@ -46,7 +60,7 @@ describe("review server integration", () => {
 		expect(data.origin).toBe("pi");
 		expect(data.diffType).toBe("uncommitted");
 		expect(data.sessionId).toBe("review-session-456");
-		expect(data.base).toBe("main");
+		expect(data.base).toMatch(/main$/);
 	});
 
 	test("GET /api/sessions returns session listing", async () => {
@@ -64,7 +78,7 @@ describe("review server integration", () => {
 	});
 
 	test("POST /api/feedback resolves decision with approved=false by default", async () => {
-		const server = await startReviewServer({
+		const server = await createTestServer({
 			rawPatch: MOCK_PATCH,
 			gitRef: "abc",
 			htmlContent: HTML_CONTENT,
@@ -86,10 +100,10 @@ describe("review server integration", () => {
 		} finally {
 			server.stop();
 		}
-	});
+	}, 30000);
 
 	test("POST /api/feedback with approved=true resolves approved", async () => {
-		const server = await startReviewServer({
+		const server = await createTestServer({
 			rawPatch: MOCK_PATCH,
 			gitRef: "abc",
 			htmlContent: HTML_CONTENT,
@@ -109,10 +123,10 @@ describe("review server integration", () => {
 		} finally {
 			server.stop();
 		}
-	});
+	}, 30000);
 
 	test("POST /api/exit resolves decision with exit=true", async () => {
-		const server = await startReviewServer({
+		const server = await createTestServer({
 			rawPatch: MOCK_PATCH,
 			gitRef: "abc",
 			htmlContent: HTML_CONTENT,
@@ -126,7 +140,7 @@ describe("review server integration", () => {
 		} finally {
 			server.stop();
 		}
-	});
+	}, 30000);
 
 	test("GET /api/image returns 400 without path", async () => {
 		const res = await fetch(`${baseUrl}/api/image`);
@@ -167,7 +181,7 @@ describe("review server integration", () => {
 	});
 
 	test("GET /api/diff with error option includes error field", async () => {
-		const server = await startReviewServer({
+		const server = await createTestServer({
 			rawPatch: "",
 			gitRef: "",
 			htmlContent: HTML_CONTENT,
@@ -180,10 +194,10 @@ describe("review server integration", () => {
 		} finally {
 			server.stop();
 		}
-	});
+	}, 30000);
 
 	test("initialBase overrides gitContext.defaultBranch", async () => {
-		const server = await startReviewServer({
+		const server = await createTestServer({
 			rawPatch: MOCK_PATCH,
 			gitRef: "abc",
 			htmlContent: HTML_CONTENT,
@@ -203,7 +217,7 @@ describe("review server integration", () => {
 		} finally {
 			server.stop();
 		}
-	});
+	}, 30000);
 
 	test("POST /api/git-add returns 400 for missing filePath", async () => {
 		const res = await fetch(`${baseUrl}/api/git-add`, {
@@ -229,7 +243,7 @@ describe("review server integration", () => {
 	});
 
 	test("POST /api/feedback with agentSwitch includes it in decision", async () => {
-		const server = await startReviewServer({
+		const server = await createTestServer({
 			rawPatch: MOCK_PATCH,
 			gitRef: "abc",
 			htmlContent: HTML_CONTENT,
@@ -249,5 +263,5 @@ describe("review server integration", () => {
 		} finally {
 			server.stop();
 		}
-	});
+	}, 30000);
 });

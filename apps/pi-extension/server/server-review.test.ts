@@ -766,6 +766,8 @@ describe("Review server — agent jobs integration", () => {
 	test("GET /api/draft returns 404 when no draft", async () => {
 		const server = await startReview();
 		try {
+			// Delete any leftover draft from previous test with same patch hash
+			await fetch(`${server.url}/api/draft`, { method: "DELETE" });
 			const res = await fetch(`${server.url}/api/draft`);
 			expect(res.status).toBe(404);
 		} finally { server.stop(); }

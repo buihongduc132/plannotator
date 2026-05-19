@@ -53,9 +53,10 @@ import {
 	handleImageRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { html, json, parseBody, requestUrl, toWebRequest } from "./helpers.js";
+import { extractSessionSlug, html, injectSessionPath, json, parseBody, requestUrl, toWebRequest } from "./helpers.js";
 
 import { isRemoteSession, listenOnPort } from "./network.js";
+import { parseSessionPath } from "./session-registry.js";
 import {
 	fetchPR,
 	fetchPRContext,
@@ -190,6 +191,10 @@ export async function startReviewServer(options: {
 	onCleanup?: () => void | Promise<void>;
 	/** Called when server starts with the URL, remote status, and port */
 	onReady?: (url: string, isRemote: boolean, port: number) => void;
+	/** Session ID for multi-session routing */
+	sessionId?: string;
+	/** Working directory exposed via /api/diff and /api/sessions */
+	cwd?: string;
 }): Promise<ReviewServerResult> {
 	const gitUser = detectGitUser();
 	let draftKey = contentHash(options.rawPatch);
@@ -552,8 +557,33 @@ export async function startReviewServer(options: {
 		/* AI backbone not available */
 	}
 
+	// Session info
+	const sessionId = options.sessionId;
+	const serverCwd = options.cwd || process.cwd();
+
+	// Track this server's own session for /api/sessions
+	const ownSession = {
+		sessionId: sessionId || "default",
+		mode: "review" as string,
+		origin: options.origin ?? "pi",
+		port: 0 as number,
+	};
+
 	const server = createServer(async (req, res) => {
 		const url = requestUrl(req);
+
+		// --- Session routing ---
+		const { sessionId: pathSessionId, apiPath } = parseSessionPath(url.pathname);
+
+		if (pathSessionId !== null) {
+			// This is a /s/{sessionId}/... path — validate session
+			if (pathSessionId !== sessionId) {
+				json(res, { error: "Session mismatch" }, 403);
+				return;
+			}
+			// Rewrite pathname to the apiPath for downstream handlers
+			url.pathname = apiPath;
+		}
 
 		// API: Get tour result
 		if (url.pathname.match(/^\/api\/tour\/[^/]+$/) && req.method === "GET") {
@@ -609,6 +639,8 @@ export async function startReviewServer(options: {
 				...(isPRMode && initialViewedFiles.length > 0 && { viewedFiles: initialViewedFiles }),
 				...(currentError && { error: currentError }),
 				serverConfig: getServerConfig(gitUser),
+				...(sessionId && { sessionId }),
+				cwd: serverCwd,
 			});
 		} else if (url.pathname === "/api/diff/switch" && req.method === "POST") {
 			if (!hasLocalAccess) {
@@ -1063,6 +1095,16 @@ export async function startReviewServer(options: {
 			await handleUploadRequest(req, res);
 		} else if (url.pathname === "/api/agents" && req.method === "GET") {
 			json(res, { agents: [] });
+		} else if (url.pathname === "/api/sessions" && req.method === "GET") {
+			json(res, {
+				sessions: [{
+					sessionId: ownSession.sessionId,
+					mode: ownSession.mode,
+					origin: ownSession.origin,
+					url: `http://localhost:${ownSession.port}${sessionId ? `/s/${sessionId}` : ""}`,
+				}],
+				count: 1,
+			});
 		} else if (url.pathname === "/api/git-add" && req.method === "POST") {
 			const stageCwd = resolveVcsCwd(currentDiffType, options.gitContext?.cwd);
 			if (isPRMode || !(await canStageFiles(currentDiffType, stageCwd))) {
@@ -1145,23 +1187,35 @@ export async function startReviewServer(options: {
 				json(res, { error: message }, 500);
 			}
 		} else {
+			// Check for bare /s/{sessionId} or /s/{sessionId}/ paths (no API route)
+			const bareSlug = extractSessionSlug(url.pathname);
+			if (bareSlug !== null) {
+				if (bareSlug !== sessionId) {
+					json(res, { error: "Session mismatch" }, 403);
+					return;
+				}
+				html(res, injectSessionPath(options.htmlContent, bareSlug));
+				return;
+			}
 			html(res, options.htmlContent);
 		}
 	});
 
 	const { port, portSource } = await listenOnPort(server);
 	serverUrl = `http://localhost:${port}`;
+	ownSession.port = port;
+	const sessionUrl = sessionId ? `http://localhost:${port}/s/${sessionId}` : serverUrl;
 	const exitHandler = () => agentJobs.killAll();
 	process.once("exit", exitHandler);
 
 	if (options.onReady) {
-		options.onReady(serverUrl, isRemote, port);
+		options.onReady(sessionUrl, isRemote, port);
 	}
 
 	return {
 		port,
 		portSource,
-		url: serverUrl,
+		url: sessionUrl,
 		isRemote,
 		waitForDecision: () => decisionPromise,
 		stop: () => {
