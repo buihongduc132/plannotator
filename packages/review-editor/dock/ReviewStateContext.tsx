@@ -4,7 +4,8 @@ import type { AgentJobInfo } from '@plannotator/ui/types';
 import type { DiffFile } from '../types';
 import type { AIChatEntry } from '../hooks/useAIChat';
 import type { ReviewSearchMatch } from '../utils/reviewSearch';
-import type { PRMetadata, PRContext } from '@plannotator/shared/pr-provider';
+import type { PRMetadata, PRContext } from '@plannotator/shared/pr-types';
+import type { PRDiffScope } from '@plannotator/shared/pr-stack';
 import type { FeedbackDiffContext } from '../utils/exportFeedback';
 
 /**
@@ -36,6 +37,9 @@ export interface ReviewState {
   /** Diff context baked into exported feedback so downstream panels (agent job
    * detail, etc.) produce the same markdown the main feedback path sends. */
   feedbackDiffContext?: FeedbackDiffContext;
+  /** PR/MR review scope label, e.g. "Layer diff" or "Full stack diff". */
+  prReviewScope?: string;
+  prDiffScope?: PRDiffScope;
 
   // Annotations
   allAnnotations: CodeAnnotation[];
@@ -44,7 +48,9 @@ export interface ReviewState {
   pendingSelection: SelectedLineRange | null;
   onLineSelection: (range: SelectedLineRange | null) => void;
   onAddAnnotation: (type: CodeAnnotationType, text?: string, suggestedCode?: string, originalCode?: string, conventionalLabel?: ConventionalLabel, decorations?: ConventionalDecoration[], tokenMeta?: TokenAnnotationMeta) => void;
+  onAddAnnotationForFile: (filePath: string, type: CodeAnnotationType, text?: string, suggestedCode?: string, originalCode?: string, conventionalLabel?: ConventionalLabel, decorations?: ConventionalDecoration[], tokenMeta?: TokenAnnotationMeta) => void;
   onAddFileComment: (text: string) => void;
+  onAddFileCommentForFile: (filePath: string, text: string) => void;
   onEditAnnotation: (id: string, text?: string, suggestedCode?: string, originalCode?: string, conventionalLabel?: ConventionalLabel | null, decorations?: ConventionalDecoration[]) => void;
   onSelectAnnotation: (id: string | null) => void;
   onDeleteAnnotation: (id: string) => void;
@@ -88,9 +94,17 @@ export interface ReviewState {
 
   // Diff navigation
   openDiffFile: (filePath: string) => void;
+  onAllFilesVisibleFileChange: (filePath: string | null) => void;
+  isAllFilesActive: boolean;
 
   // Tour
   openTourPanel: (jobId: string) => void;
+
+  // Code navigation
+  onCodeNavRequest?: (request: import('@plannotator/shared/code-nav').CodeNavRequest) => void;
+  codeNavResult: import('@plannotator/shared/code-nav').CodeNavResponse | null;
+  codeNavIsLoading: boolean;
+  codeNavActiveSymbol: string | null;
 }
 
 const ReviewStateContext = createContext<ReviewState | null>(null);

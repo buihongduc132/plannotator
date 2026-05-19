@@ -1,175 +1,53 @@
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, expect, test } from "bun:test";
+import { parsePaginatedArray } from "./pr-gitlab";
 
-describe("pr-gitlab", () => {
-  const mockRunCommand = mock<(cmd: string, args: string[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>>(
-    async () => ({ stdout: "", stderr: "", exitCode: 1 })
-  );
-  const mockRuntime = { runCommand: mockRunCommand };
-
-  beforeEach(() => {
-    mockRunCommand.mockClear();
+describe("parsePaginatedArray", () => {
+  test("parses a single-page array", () => {
+    const stdout = JSON.stringify([{ a: 1 }, { a: 2 }]);
+    expect(parsePaginatedArray<{ a: number }>(stdout)).toEqual([{ a: 1 }, { a: 2 }]);
   });
 
-  describe("checkGlAuth", () => {
-    test("throws when glab auth fails", async () => {
-      mockRunCommand.mockResolvedValueOnce({
-        stdout: "",
-        stderr: "not authenticated",
-        exitCode: 1,
-      });
-      const { checkGlAuth } = await import("./pr-gitlab");
-      await expect(checkGlAuth(mockRuntime, "gitlab.com")).rejects.toThrow(
-        "GitLab CLI not authenticated",
-      );
-    });
-
-    test("passes when glab auth succeeds", async () => {
-      mockRunCommand.mockResolvedValueOnce({
-        stdout: "authenticated",
-        stderr: "",
-        exitCode: 0,
-      });
-      const { checkGlAuth } = await import("./pr-gitlab");
-      await expect(checkGlAuth(mockRuntime, "gitlab.com")).resolves.toBeUndefined();
-    });
-
-    test("includes --hostname for self-hosted GitLab", async () => {
-      mockRunCommand.mockResolvedValueOnce({
-        stdout: "authenticated",
-        stderr: "",
-        exitCode: 0,
-      });
-      const { checkGlAuth } = await import("./pr-gitlab");
-      await checkGlAuth(mockRuntime, "gitlab.mycompany.com");
-      expect(mockRunCommand).toHaveBeenCalledWith(
-        "glab",
-        expect.arrayContaining(["--hostname", "gitlab.mycompany.com"]),
-      );
-    });
+  test("merges adjacent JSON arrays from --paginate output", () => {
+    const stdout = JSON.stringify([{ a: 1 }]) + JSON.stringify([{ a: 2 }, { a: 3 }]);
+    expect(parsePaginatedArray<{ a: number }>(stdout)).toEqual([
+      { a: 1 },
+      { a: 2 },
+      { a: 3 },
+    ]);
   });
 
-  describe("getGlUser", () => {
-    test("returns username when successful", async () => {
-      mockRunCommand.mockResolvedValueOnce({
-        stdout: JSON.stringify({ username: "testuser" }),
-        stderr: "",
-        exitCode: 0,
-      });
-      const { getGlUser } = await import("./pr-gitlab");
-      const user = await getGlUser(mockRuntime, "gitlab.com");
-      expect(user).toBe("testuser");
-    });
-
-    test("returns null on failure", async () => {
-      mockRunCommand.mockResolvedValueOnce({
-        stdout: "",
-        stderr: "error",
-        exitCode: 1,
-      });
-      const { getGlUser } = await import("./pr-gitlab");
-      const user = await getGlUser(mockRuntime, "gitlab.com");
-      expect(user).toBeNull();
-    });
-
-    test("returns null on exception", async () => {
-      mockRunCommand.mockRejectedValueOnce(new Error("boom"));
-      const { getGlUser } = await import("./pr-gitlab");
-      const user = await getGlUser(mockRuntime, "gitlab.com");
-      expect(user).toBeNull();
-    });
+  test("merges three or more pages with whitespace between them", () => {
+    const stdout = [
+      JSON.stringify([1, 2]),
+      JSON.stringify([3, 4]),
+      JSON.stringify([5]),
+    ].join("\n");
+    expect(parsePaginatedArray<number>(stdout)).toEqual([1, 2, 3, 4, 5]);
   });
 
-  describe("fetchGlMR", () => {
-    test("fetches MR diff and metadata", async () => {
-      mockRunCommand.mockImplementation(async (_cmd: string, args: string[]) => {
-        if (args[1]?.includes("diffs")) {
-          return {
-            stdout: JSON.stringify([{
-              diff: "@@ -1 +1 @@\n-old\n+new",
-              old_path: "file.ts",
-              new_path: "file.ts",
-              new_file: false,
-              deleted_file: false,
-              renamed_file: false,
-            }]),
-            stderr: "",
-            exitCode: 0,
-          };
-        }
-        return {
-          stdout: JSON.stringify({
-            title: "Test MR",
-            author: { username: "user" },
-            source_branch: "feature",
-            target_branch: "main",
-            diff_refs: { base_sha: "abc", head_sha: "def", start_sha: "ghi" },
-            web_url: "https://gitlab.com/group/project/-/merge_requests/1",
-          }),
-          stderr: "",
-          exitCode: 0,
-        };
-      });
+  test("handles strings containing brackets without splitting prematurely", () => {
+    // Diff content frequently contains `][` inside JSON strings — must not be
+    // confused with a page boundary.
+    const page1 = [{ diff: "before][after", new_path: "a" }];
+    const page2 = [{ diff: "second", new_path: "b" }];
+    const stdout = JSON.stringify(page1) + JSON.stringify(page2);
+    expect(parsePaginatedArray(stdout)).toEqual([...page1, ...page2]);
+  });
 
-      const { fetchGlMR } = await import("./pr-gitlab");
-      const result = await fetchGlMR(mockRuntime, {
-        platform: "gitlab",
-        host: "gitlab.com",
-        projectPath: "group/project",
-        iid: 1,
-      });
+  test("handles escaped quotes inside strings", () => {
+    const page1 = [{ diff: 'has \\"quote\\" and ] bracket', new_path: "a" }];
+    const page2 = [{ diff: "second", new_path: "b" }];
+    const stdout = JSON.stringify(page1) + JSON.stringify(page2);
+    expect(parsePaginatedArray(stdout)).toEqual([...page1, ...page2]);
+  });
 
-      expect(result.rawPatch).toContain("diff --git");
-      expect(result.metadata.title).toBe("Test MR");
-      expect(result.metadata.platform).toBe("gitlab");
-    });
+  test("returns empty array for empty input", () => {
+    expect(parsePaginatedArray("")).toEqual([]);
+    expect(parsePaginatedArray("   \n")).toEqual([]);
+  });
 
-    test("throws when diff fetch fails", async () => {
-      mockRunCommand.mockImplementation(async (_cmd: string, args: string[]) => {
-        if (args[1]?.includes("diffs")) {
-          return { stdout: "", stderr: "not found", exitCode: 1 };
-        }
-        return { stdout: "{}", stderr: "", exitCode: 0 };
-      });
-
-      const { fetchGlMR } = await import("./pr-gitlab");
-      await expect(
-        fetchGlMR(mockRuntime, {
-          platform: "gitlab",
-          host: "gitlab.com",
-          projectPath: "group/project",
-          iid: 1,
-        }),
-      ).rejects.toThrow("Failed to fetch MR diff");
-    });
-
-    test("throws when MR has no diff refs", async () => {
-      mockRunCommand.mockImplementation(async (_cmd: string, args: string[]) => {
-        if (args[1]?.includes("diffs")) {
-          return { stdout: "[]", stderr: "", exitCode: 0 };
-        }
-        return {
-          stdout: JSON.stringify({
-            title: "Test MR",
-            author: { username: "user" },
-            source_branch: "feature",
-            target_branch: "main",
-            diff_refs: null,
-            web_url: "https://gitlab.com/group/project/-/merge_requests/1",
-          }),
-          stderr: "",
-          exitCode: 0,
-        };
-      });
-
-      const { fetchGlMR } = await import("./pr-gitlab");
-      await expect(
-        fetchGlMR(mockRuntime, {
-          platform: "gitlab",
-          host: "gitlab.com",
-          projectPath: "group/project",
-          iid: 1,
-        }),
-      ).rejects.toThrow("no diff refs");
-    });
+  test("handles empty pages mixed with non-empty ones", () => {
+    const stdout = "[]" + JSON.stringify([{ a: 1 }]) + "[]";
+    expect(parsePaginatedArray<{ a: number }>(stdout)).toEqual([{ a: 1 }]);
   });
 });

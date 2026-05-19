@@ -10,18 +10,20 @@ import {
 	handleImageRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { detectWSL, extractSessionSlug, html, injectSessionPath, json, parseBody, requestUrl } from "./helpers.js";
+import { html, json, parseBody, requestUrl } from "./helpers.js";
 
 import { listenOnPort } from "./network.js";
 
 import { getRepoInfo } from "./project.js";
 import {
 	handleDocRequest,
+	handleDocExistsRequest,
 	handleFileBrowserRequest,
 	handleObsidianVaultsRequest,
 	handleObsidianFilesRequest,
 	handleObsidianDocRequest,
 } from "./reference.js";
+import { warmFileListCache } from "../generated/resolve-file.js";
 import { createExternalAnnotationHandler } from "./external-annotations.js";
 
 export interface AnnotateServerResult {
@@ -43,10 +45,13 @@ export async function startAnnotateServer(options: {
 	shareBaseUrl?: string;
 	pasteApiUrl?: string;
 	sourceInfo?: string;
+	sourceConverted?: boolean;
 	gate?: boolean;
-	sessionId?: string;
-	cwd?: string;
+	rawHtml?: string;
+	renderHtml?: boolean;
 }): Promise<AnnotateServerResult> {
+	// Side-channel pre-warm so /api/doc/exists POSTs land on warm cache.
+	void warmFileListCache(process.cwd(), "code");
 	const gitUser = detectGitUser();
 	const sharingEnabled =
 		options.sharingEnabled ?? process.env.PLANNOTATOR_SHARE !== "disabled";
@@ -54,8 +59,6 @@ export async function startAnnotateServer(options: {
 		(options.shareBaseUrl ?? process.env.PLANNOTATOR_SHARE_URL) || undefined;
 	const pasteApiUrl =
 		(options.pasteApiUrl ?? process.env.PLANNOTATOR_PASTE_URL) || undefined;
-	const sessionId = options.sessionId;
-	const sessionCwd = options.cwd;
 
 	let resolveDecision!: (result: {
 		feedback: string;
@@ -72,137 +75,90 @@ export async function startAnnotateServer(options: {
 		resolveDecision = r;
 	});
 
-	const parseSessionPath = (pathname: string): { sessionId: string | null; apiPath: string } => {
-		const match = /^\/s\/([^/]+)(\/api\/.*)$/.exec(pathname);
-		if (match) return { sessionId: match[1], apiPath: match[2] };
-		return { sessionId: null, apiPath: pathname };
-	};
+	// Folder annotation has no stable markdown body, so key drafts by folder path instead.
+	const draftSource =
+		options.mode === "annotate-folder" && options.folderPath
+			? `folder:${resolvePath(options.folderPath)}`
+			: options.renderHtml && options.rawHtml ? options.rawHtml : options.markdown;
+	const draftKey = contentHash(draftSource);
 
-	const draftKey = contentHash(options.markdown);
+	// Detect repo info (cached for this session)
 	const repoInfo = getRepoInfo();
-	let listenUrl = "";
+
 	const externalAnnotations = createExternalAnnotationHandler("plan");
 
-	let port = 0;
 	const server = createServer(async (req, res) => {
 		const url = requestUrl(req);
-		const { sessionId: routeSessionId, apiPath } = sessionId
-			? parseSessionPath(url.pathname)
-			: { sessionId: null, apiPath: url.pathname };
-
-		if (sessionId && routeSessionId && routeSessionId !== sessionId) {
-			json(
-				res,
-				{
-					error: "Session mismatch",
-					message: `URL session "${routeSessionId}" does not match expected "${sessionId}"`,
-				},
-				403,
-			);
-			return;
-		}
-		// REQ-14: Bare /s/{sessionId} path (SPA navigation) — inject session base
-		// and serve HTML. Only reject if the slug doesn't match our session.
-		if (sessionId && !routeSessionId && apiPath.startsWith("/s/")) {
-			const slug = extractSessionSlug(url.pathname);
-			if (slug && slug !== sessionId) {
-				json(res, { error: "Session mismatch", message: `URL session "${slug}" does not match expected "${sessionId}"` }, 403);
-				return;
-			}
-			html(res, injectSessionPath(options.htmlContent, sessionId));
-			return;
-		}
 
 		if (await externalAnnotations.handle(req, res, url)) return;
 
-		if (apiPath === "/api/plan" && req.method === "GET") {
-			const wslFlag = detectWSL();
+		if (url.pathname === "/api/plan" && req.method === "GET") {
 			json(res, {
 				plan: options.markdown,
 				origin: options.origin ?? "pi",
 				mode: options.mode || "annotate",
 				filePath: options.filePath,
 				sourceInfo: options.sourceInfo,
+				sourceConverted: options.sourceConverted ?? false,
 				gate: options.gate ?? false,
+				renderAs: options.renderHtml && options.rawHtml ? 'html' : 'markdown',
+				...(options.renderHtml && options.rawHtml ? { rawHtml: options.rawHtml } : {}),
 				sharingEnabled,
 				shareBaseUrl,
 				pasteApiUrl,
 				repoInfo,
-				projectRoot: options.folderPath || sessionCwd || process.cwd(),
-				cwd: sessionCwd,
-				isWSL: wslFlag,
-				sessionId,
+				projectRoot: options.folderPath || process.cwd(),
 				serverConfig: getServerConfig(gitUser),
 			});
-		} else if (apiPath === "/api/sessions" && req.method === "GET") {
-			json(res, {
-				sessions: [
-					{
-						sessionId: sessionId ?? "annotate",
-						mode: options.mode || "annotate",
-						origin: options.origin ?? "pi",
-						project: repoInfo?.display ?? "Unknown",
-						slug: options.filePath.split("/").pop() || "markdown",
-						name: options.filePath.split("/").pop() || "Annotate",
-						cwd: sessionCwd || process.cwd(),
-						url: sessionId
-							? `${listenUrl}/s/${sessionId}`
-							: `${listenUrl}`,
-					},
-				],
-				count: 1,
-			});
-		} else if (apiPath === "/api/config" && req.method === "POST") {
+		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			try {
-				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
+				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean };
 				const toSave: Record<string, unknown> = {};
 				if (body.displayName !== undefined) toSave.displayName = body.displayName;
 				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
-				if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
 				if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
 				json(res, { ok: true });
 			} catch {
 				json(res, { error: "Invalid request" }, 400);
 			}
-		} else if (apiPath === "/api/image") {
+		} else if (url.pathname === "/api/image") {
 			handleImageRequest(res, url);
-		} else if (apiPath === "/api/upload" && req.method === "POST") {
+		} else if (url.pathname === "/api/upload" && req.method === "POST") {
 			await handleUploadRequest(req, res);
-		} else if (apiPath === "/api/draft") {
-			await handleDraftRequest(
-				req,
-				res,
-				draftKey,
-				sessionId && sessionCwd ? { sessionId, cwd: sessionCwd } : undefined,
-			);
-		} else if (apiPath === "/api/doc" && req.method === "GET") {
-			if (!url.searchParams.has("base") && options.filePath) {
+		} else if (url.pathname === "/api/draft") {
+			await handleDraftRequest(req, res, draftKey);
+		} else if (url.pathname === "/api/doc" && req.method === "GET") {
+			// Inject source file's directory as base for relative path resolution.
+			// Skip for URL annotations — there's no local directory to resolve against.
+			if (!url.searchParams.has("base") && options.filePath && !/^https?:\/\//i.test(options.filePath)) {
 				url.searchParams.set("base", dirname(resolvePath(options.filePath)));
 			}
-			handleDocRequest(res, url);
-		} else if (apiPath === "/api/obsidian/vaults") {
+			await handleDocRequest(res, url);
+		} else if (url.pathname === "/api/doc/exists" && req.method === "POST") {
+			await handleDocExistsRequest(res, req);
+		} else if (url.pathname === "/api/obsidian/vaults") {
 			handleObsidianVaultsRequest(res);
-		} else if (apiPath === "/api/reference/obsidian/files" && req.method === "GET") {
+		} else if (url.pathname === "/api/reference/obsidian/files" && req.method === "GET") {
 			handleObsidianFilesRequest(res, url);
-		} else if (apiPath === "/api/reference/obsidian/doc" && req.method === "GET") {
+		} else if (url.pathname === "/api/reference/obsidian/doc" && req.method === "GET") {
 			handleObsidianDocRequest(res, url);
-		} else if (apiPath === "/api/reference/files" && req.method === "GET") {
+		} else if (url.pathname === "/api/reference/files" && req.method === "GET") {
 			handleFileBrowserRequest(res, url);
-		} else if (apiPath === "/favicon.svg" || url.pathname === "/favicon.svg") {
+		} else if (url.pathname === "/favicon.svg") {
 			handleFavicon(res);
-		} else if (apiPath === "/api/exit" && req.method === "POST") {
-			deleteDraft(draftKey, sessionId && sessionCwd ? { sessionId, cwd: sessionCwd } : undefined);
+		} else if (url.pathname === "/api/exit" && req.method === "POST") {
+			deleteDraft(draftKey);
 			resolveDecision({ feedback: "", annotations: [], exit: true });
 			json(res, { ok: true });
-		} else if (apiPath === "/api/approve" && req.method === "POST") {
-			deleteDraft(draftKey, sessionId && sessionCwd ? { sessionId, cwd: sessionCwd } : undefined);
+		} else if (url.pathname === "/api/approve" && req.method === "POST") {
+			deleteDraft(draftKey);
 			resolveDecision({ feedback: "", annotations: [], approved: true });
 			json(res, { ok: true });
-		} else if (apiPath === "/api/feedback" && req.method === "POST") {
+		} else if (url.pathname === "/api/feedback" && req.method === "POST") {
 			try {
 				const body = await parseBody(req);
-				deleteDraft(draftKey, sessionId && sessionCwd ? { sessionId, cwd: sessionCwd } : undefined);
+				deleteDraft(draftKey);
 				resolveDecision({
 					feedback: (body.feedback as string) || "",
 					annotations: (body.annotations as unknown[]) || [],
@@ -212,21 +168,17 @@ export async function startAnnotateServer(options: {
 				const message = err instanceof Error ? err.message : "Failed to process feedback";
 				json(res, { error: message }, 500);
 			}
-		} else if (apiPath.startsWith("/api/")) {
-			json(res, { error: "Not found", path: apiPath }, 404);
 		} else {
 			html(res, options.htmlContent);
 		}
 	});
 
-	const result = await listenOnPort(server);
-	port = result.port;
-	listenUrl = result.url;
+	const { port, portSource } = await listenOnPort(server);
 
 	return {
 		port,
-		portSource: result.portSource,
-		url: sessionId ? `${listenUrl}/s/${sessionId}` : listenUrl,
+		portSource,
+		url: `http://localhost:${port}`,
 		waitForDecision: () => decisionPromise,
 		stop: () => server.close(),
 	};

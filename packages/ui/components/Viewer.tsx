@@ -9,6 +9,8 @@ import { CodeBlock } from './blocks/CodeBlock';
 import { TableBlock } from './blocks/TableBlock';
 import { TableToolbar } from './blocks/TableToolbar';
 import { TablePopout } from './blocks/TablePopout';
+import { CodePathValidationContext } from './CodePathValidationContext';
+import { useValidatedCodePaths } from '../hooks/useValidatedCodePaths';
 import { ListMarker } from './ListMarker';
 import { AnnotationToolbar } from './AnnotationToolbar';
 import { FloatingQuickLabelPicker } from './FloatingQuickLabelPicker';
@@ -64,9 +66,13 @@ interface ViewerProps {
   repoInfo?: { display: string; branch?: string; host?: string } | null;
   stickyActions?: boolean;
   onOpenLinkedDoc?: (path: string) => void;
+  onOpenCodeFile?: (path: string) => void;
   imageBaseDir?: string;
+  /** Directory the active document lives in — used by the code-path validator
+   *  so out-of-tree relative references (e.g. `../foo.ts` in a linked doc)
+   *  resolve against the doc's own directory rather than only cwd. */
+  codePathBaseDir?: string;
   linkedDocInfo?: { filepath: string; onBack: () => void; label?: string; backLabel?: string } | null;
-  cwd?: string | null;
   // Plan diff props
   planDiffStats?: { additions: number; deletions: number; modifications: number } | null;
   isPlanDiffActive?: boolean;
@@ -154,13 +160,14 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   showDemoBadge,
   maxWidth,
   onOpenLinkedDoc,
+  onOpenCodeFile,
   linkedDocInfo,
   imageBaseDir,
+  codePathBaseDir,
   copyLabel,
   actionsLabelMode = 'full',
   archiveInfo,
-sourceInfo,
-cwd,
+  sourceInfo,
   onToggleCheckbox,
   checkboxOverrides,
 }, ref) => {
@@ -510,7 +517,10 @@ cwd,
     setViewerCommentPopover(null);
   }, []);
 
+  const codePathValidation = useValidatedCodePaths(markdown, codePathBaseDir);
+
   return (
+    <CodePathValidationContext.Provider value={codePathValidation}>
     <div className="relative z-50 w-full" style={maxWidth === null ? undefined : { maxWidth: maxWidth ?? 832 }}>
       {taterMode && <TaterSpriteSitting />}
       <article
@@ -520,12 +530,11 @@ cwd,
         style={{ WebkitTouchCallout: 'none' } as React.CSSProperties}
       >
         {/* Repo info + plan diff badge + demo badge + linked doc badge + archive badge - top left */}
-{(repoInfo || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo || sourceInfo || cwd) && (
+        {(repoInfo || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo || sourceInfo) && (
           <div data-print-hide className="absolute top-3 left-3 md:top-4 md:left-5">
             <DocBadges
               layout="column"
               repoInfo={repoInfo}
-              cwd={cwd}
               planDiffStats={planDiffStats}
               isPlanDiffActive={isPlanDiffActive}
               hasPreviousVersion={hasPreviousVersion}
@@ -614,6 +623,7 @@ cwd,
                       block={block}
                       orderedIndex={indices[i]}
                       onOpenLinkedDoc={onOpenLinkedDoc}
+                      onOpenCodeFile={onOpenCodeFile}
                       onToggleCheckbox={onToggleCheckbox}
                       checkboxOverrides={checkboxOverrides}
                       githubRepo={repoInfo?.display}
@@ -635,6 +645,7 @@ cwd,
               imageBaseDir={imageBaseDir}
               onImageClick={(src, alt) => setLightbox({ src, alt })}
               onOpenLinkedDoc={onOpenLinkedDoc}
+              onOpenCodeFile={onOpenCodeFile}
               githubRepo={repoInfo?.display}
               onNavigateAnchor={scrollToAnchor}
               onHover={(element) => {
@@ -688,7 +699,7 @@ cwd,
               isHovered={inputMethod !== 'pinpoint' && hoveredCodeBlock?.block.id === group.block.id}
             />
           ) : (
-            <BlockRenderer imageBaseDir={imageBaseDir} onImageClick={(src, alt) => setLightbox({ src, alt })} key={group.block.id} block={group.block} onOpenLinkedDoc={onOpenLinkedDoc} onNavigateAnchor={scrollToAnchor} onToggleCheckbox={onToggleCheckbox} checkboxOverrides={checkboxOverrides} githubRepo={repoInfo?.display} headingAnchorId={headingSlugMap.get(group.block.id)} />
+            <BlockRenderer imageBaseDir={imageBaseDir} onImageClick={(src, alt) => setLightbox({ src, alt })} key={group.block.id} block={group.block} onOpenLinkedDoc={onOpenLinkedDoc} onOpenCodeFile={onOpenCodeFile} onNavigateAnchor={scrollToAnchor} onToggleCheckbox={onToggleCheckbox} checkboxOverrides={checkboxOverrides} githubRepo={repoInfo?.display} headingAnchorId={headingSlugMap.get(group.block.id)} />
           )
         )}
 
@@ -784,6 +795,7 @@ cwd,
             imageBaseDir={imageBaseDir}
             onImageClick={(src, alt) => setLightbox({ src, alt })}
             onOpenLinkedDoc={onOpenLinkedDoc}
+            onOpenCodeFile={onOpenCodeFile}
             githubRepo={repoInfo?.display}
             onNavigateAnchor={scrollToAnchor}
           />
@@ -853,6 +865,7 @@ cwd,
         document.body
       )}
     </div>
+    </CodePathValidationContext.Provider>
   );
 });
 

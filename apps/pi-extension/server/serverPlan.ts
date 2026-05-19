@@ -9,7 +9,6 @@ import {
 	getPlanVersionPath,
 	getVersionCount,
 	listArchivedPlans,
-	listProjectPlans,
 	listVersions,
 	readArchivedPlan,
 	saveAnnotations,
@@ -24,7 +23,7 @@ import {
 	handleImageRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { detectWSL, html, json, parseBody, requestUrl } from "./helpers.js";
+import { html, json, parseBody, requestUrl } from "./helpers.js";
 import { openEditorDiff } from "./ide.js";
 import {
 	type BearConfig,
@@ -37,15 +36,19 @@ import {
 } from "./integrations.js";
 import { listenOnPort } from "./network.js";
 
-import { saveConfig, detectGitUser, getServerConfig } from "../generated/config.js";
+import { loadConfig, saveConfig, detectGitUser, getServerConfig } from "../generated/config.js";
+import { readImprovementHook, getImprovementHookExpectedPath } from "../generated/improvement-hooks.js";
+import { composeImproveContext } from "../generated/pfm-reminder.js";
 import { detectProjectName, getRepoInfo } from "./project.js";
 import {
 	handleDocRequest,
+	handleDocExistsRequest,
 	handleFileBrowserRequest,
 	handleObsidianDocRequest,
 	handleObsidianFilesRequest,
 	handleObsidianVaultsRequest,
 } from "./reference.js";
+import { warmFileListCache } from "../generated/resolve-file.js";
 
 export interface PlanReviewDecision {
 	approved: boolean;
@@ -77,6 +80,8 @@ export async function startPlanReviewServer(options: {
 	mode?: "archive";
 	customPlanPath?: string | null;
 }): Promise<PlanServerResult> {
+	// Side-channel pre-warm so /api/doc/exists POSTs land on warm cache.
+	void warmFileListCache(process.cwd(), "code");
 	const gitUser = detectGitUser();
 	const sharingEnabled =
 		options.sharingEnabled ?? process.env.PLANNOTATOR_SHARE !== "disabled";
@@ -129,34 +134,19 @@ export async function startPlanReviewServer(options: {
 	const reviewId = randomUUID();
 	let resolveDecision!: (result: PlanReviewDecision) => void;
 	const decisionListeners = new Set<(result: PlanReviewDecision) => void | Promise<void>>();
-	const sseClients = new Set<import("node:http").ServerResponse>();
 	let decisionSettled = false;
-	let decisionResult: PlanReviewDecision | null = null;
 	const decisionPromise = new Promise<PlanReviewDecision>((r) => {
 		resolveDecision = r;
 	});
 	const publishDecision = (result: PlanReviewDecision): boolean => {
 		if (decisionSettled) return false;
 		decisionSettled = true;
-		decisionResult = result;
 		resolveDecision(result);
 		for (const listener of decisionListeners) {
 			Promise.resolve(listener(result)).catch((error) => {
 				console.error("[Plan Review] Decision listener failed:", error);
 			});
 		}
-		const payload = `event: decision\ndata: ${JSON.stringify(result)}\n\n`;
-		for (const client of sseClients) {
-			try {
-				if (!client.writableEnded && !client.destroyed) {
-					client.write(payload);
-					client.end();
-				}
-			} catch {
-				// Client already disconnected
-			}
-		}
-		sseClients.clear();
 		return true;
 	};
 
@@ -169,9 +159,6 @@ export async function startPlanReviewServer(options: {
 
 	// Lazy cache for in-session archive tab
 	let cachedArchivePlans: ArchivedPlan[] | null = null;
-
-	// Will be set after listenOnPort
-	let serverUrl = "";
 
 	const server = createServer(async (req, res) => {
 		const url = requestUrl(req);
@@ -197,77 +184,6 @@ export async function startPlanReviewServer(options: {
 				return;
 			}
 			json(res, { markdown, filepath: filename });
-		} else if (url.pathname === "/api/sessions" && req.method === "POST") {
-			try {
-				const body = (await parseBody(req)) as {
-					plan?: string;
-					mode?: string;
-					name?: string;
-				};
-				if (!body.plan) {
-					json(res, { error: "plan is required" }, 400);
-					return;
-				}
-				const createdSlug = generateSlug(body.plan);
-				const createdProject = detectProjectName();
-				saveToHistory(createdProject, createdSlug, body.plan);
-				const sessionId = randomUUID();
-				json(res, {
-					sessionId,
-					url: `${serverUrl}/s/${sessionId}`,
-					plan: body.plan,
-					slug: createdSlug,
-					name: body.name ?? null,
-					mode: body.mode ?? "plan",
-					project: createdProject,
-				});
-			} catch (error) {
-				json(
-					res,
-					{ error: error instanceof Error ? error.message : "Failed to create session" },
-					500,
-				);
-			}
-		} else if (url.pathname === "/api/sessions" && req.method === "GET") {
-			json(res, {
-				sessions: [
-					{
-						sessionId: reviewId,
-						mode: options.mode ?? "plan",
-						origin: options.origin ?? "pi",
-						project,
-						slug,
-						name: null,
-						cwd: process.cwd(),
-						url: `${serverUrl}/s/${reviewId}`,
-					},
-				],
-				count: 1,
-			});
-		} else if (url.pathname === "/api/plans" && req.method === "GET") {
-			json(res, { plans: listProjectPlans(project).map((entry) => ({ ...entry, project })) });
-		} else if (url.pathname === "/api/decision" && req.method === "GET") {
-			if (!decisionSettled) {
-				json(res, { pending: true });
-				return;
-			}
-			json(res, decisionResult ?? { pending: true });
-		} else if (url.pathname === "/api/decision/stream" && req.method === "GET") {
-			res.writeHead(200, {
-				"Content-Type": "text/event-stream",
-				"Cache-Control": "no-cache, no-transform",
-				Connection: "keep-alive",
-			});
-			res.write("event: connected\ndata: {}\n\n");
-			if (decisionSettled && decisionResult) {
-				res.write(`event: decision\ndata: ${JSON.stringify(decisionResult)}\n\n`);
-				res.end();
-				return;
-			}
-			sseClients.add(res);
-			req.on("close", () => {
-				sseClients.delete(res);
-			});
 		} else if (url.pathname === "/api/plan/version") {
 			const vParam = url.searchParams.get("v");
 			if (!vParam) {
@@ -288,7 +204,6 @@ export async function startPlanReviewServer(options: {
 		} else if (url.pathname === "/api/plan/versions") {
 			json(res, { project, slug, versions: listVersions(project, slug) });
 		} else if (url.pathname === "/api/plan") {
-			const wslFlag = detectWSL();
 			if (options.mode === "archive") {
 				json(res, {
 					plan: initialArchivePlan,
@@ -297,9 +212,7 @@ export async function startPlanReviewServer(options: {
 					archivePlans,
 					sharingEnabled,
 					shareBaseUrl,
-					isWSL: wslFlag,
 					serverConfig: getServerConfig(gitUser),
-					sessionId: reviewId,
 				});
 			} else {
 				json(res, {
@@ -313,20 +226,32 @@ export async function startPlanReviewServer(options: {
 					pasteApiUrl,
 					repoInfo,
 					projectRoot: process.cwd(),
-					cwd: process.cwd(),
-					isWSL: wslFlag,
 					serverConfig: getServerConfig(gitUser),
-					sessionId: reviewId,
 				});
 			}
+		} else if (url.pathname === "/api/hooks/status" && req.method === "GET") {
+			const config = loadConfig();
+			const hook = readImprovementHook("enterplanmode-improve");
+			const pfmEnabled = config.pfmReminder === true;
+			const composed = composeImproveContext({ pfmEnabled, improvementHookContent: hook?.content ?? null });
+			json(res, {
+				pfmReminder: { enabled: pfmEnabled },
+				improvementHook: {
+					present: !!hook,
+					filePath: hook?.filePath ?? getImprovementHookExpectedPath("enterplanmode-improve"),
+					fileSize: hook?.content?.length ?? null,
+					content: hook?.content ?? null,
+				},
+				composedLength: composed?.length ?? null,
+			});
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			try {
-				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
+				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; pfmReminder?: boolean };
 				const toSave: Record<string, unknown> = {};
 				if (body.displayName !== undefined) toSave.displayName = body.displayName;
 				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
-				if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
+				if (body.pfmReminder !== undefined) toSave.pfmReminder = body.pfmReminder;
 				if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
 				json(res, { ok: true });
 			} catch {
@@ -343,7 +268,9 @@ export async function startPlanReviewServer(options: {
 		} else if (externalAnnotations && (await externalAnnotations.handle(req, res, url))) {
 			return;
 		} else if (url.pathname === "/api/doc" && req.method === "GET") {
-			handleDocRequest(res, url);
+			await handleDocRequest(res, url);
+		} else if (url.pathname === "/api/doc/exists" && req.method === "POST") {
+			await handleDocExistsRequest(res, req);
 		} else if (url.pathname === "/api/obsidian/vaults") {
 			handleObsidianVaultsRequest(res);
 		} else if (url.pathname === "/api/reference/obsidian/files" && req.method === "GET") {
@@ -406,21 +333,21 @@ export async function startPlanReviewServer(options: {
 					promises.push(
 						saveToObsidian(obsConfig).then((r) => {
 							results.obsidian = r;
-						}).catch(() => { /* integration save failed, non-critical */ }),
+						}),
 					);
 				}
 				if (bearConfig?.plan) {
 					promises.push(
 						saveToBear(bearConfig).then((r) => {
 							results.bear = r;
-						}).catch(() => { /* integration save failed, non-critical */ }),
+						}),
 					);
 				}
 				if (octConfig?.plan && octConfig?.workspace) {
 					promises.push(
 						saveToOctarine(octConfig).then((r) => {
 							results.octarine = r;
-						}).catch(() => { /* integration save failed, non-critical */ }),
+						}),
 					);
 				}
 				await Promise.allSettled(promises);
@@ -465,21 +392,21 @@ export async function startPlanReviewServer(options: {
 					integrationPromises.push(
 						saveToObsidian(obsConfig).then((r) => {
 							integrationResults.obsidian = r;
-						}).catch(() => { /* integration save failed, non-critical */ }),
+						}),
 					);
 				}
 				if (bearConfig?.plan) {
 					integrationPromises.push(
 						saveToBear(bearConfig).then((r) => {
 							integrationResults.bear = r;
-						}).catch(() => { /* integration save failed, non-critical */ }),
+						}),
 					);
 				}
 				if (octConfig?.plan && octConfig?.workspace) {
 					integrationPromises.push(
 						saveToOctarine(octConfig).then((r) => {
 							integrationResults.octarine = r;
-						}).catch(() => { /* integration save failed, non-critical */ }),
+						}),
 					);
 				}
 				await Promise.allSettled(integrationPromises);
@@ -546,32 +473,18 @@ export async function startPlanReviewServer(options: {
 			deleteDraft(draftKey);
 			publishDecision({ approved: false, feedback, savedPath });
 			json(res, { ok: true, savedPath });
-		} else if (url.pathname.startsWith("/api/")) {
-			json(res, { error: "Not found", path: url.pathname }, 404);
 		} else {
 			html(res, options.htmlContent);
 		}
 	});
 
-	server.on("close", () => {
-		for (const client of sseClients) {
-			if (!client.writableEnded) {
-				client.end();
-			}
-		}
-		sseClients.clear();
-	});
-
-	const result = await listenOnPort(server);
-	const port = result.port;
-	const portSource = result.portSource;
-	serverUrl = result.url;
+	const { port, portSource } = await listenOnPort(server);
 
 	return {
 		reviewId,
 		port,
 		portSource,
-		url: serverUrl,
+		url: `http://localhost:${port}`,
 		waitForDecision: () => decisionPromise,
 		onDecision: (listener) => {
 			decisionListeners.add(listener);

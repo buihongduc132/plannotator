@@ -5,6 +5,7 @@ import {
   shouldApplyToolDefinitionRewrites,
   shouldInjectFullPlanningPrompt,
   shouldInjectGenericPlanReminder,
+  shouldModifyPrompts,
   shouldRegisterSubmitPlan,
   shouldRejectSubmitPlanForAgent,
 } from "./workflow";
@@ -53,6 +54,16 @@ describe("workflow gates", () => {
     expect(shouldRejectSubmitPlanForAgent("build", options)).toBe(false);
   });
 
+  test("user-managed mode registers tool but skips prompt/config modifications", () => {
+    const options = normalizeWorkflowOptions({ workflow: "user-managed" });
+
+    expect(shouldRegisterSubmitPlan(options)).toBe(true);
+    expect(shouldModifyPrompts(options)).toBe(false);
+    expect(shouldApplyToolDefinitionRewrites(options)).toBe(false);
+    expect(shouldInjectFullPlanningPrompt("plan", options)).toBe(false);
+    expect(shouldRejectSubmitPlanForAgent("build", options)).toBe(false);
+  });
+
   test("plan-agent mode injects only for configured planning agents", () => {
     const options = normalizeWorkflowOptions({
       workflow: "plan-agent",
@@ -92,6 +103,14 @@ describe("applyWorkflowConfig", () => {
     const config: any = {};
 
     applyWorkflowConfig(config, normalizeWorkflowOptions({ workflow: "manual" }), false);
+
+    expect(config).toEqual({});
+  });
+
+  test("user-managed mode leaves OpenCode config untouched", () => {
+    const config: any = {};
+
+    applyWorkflowConfig(config, normalizeWorkflowOptions({ workflow: "user-managed" }), false);
 
     expect(config).toEqual({});
   });
@@ -164,6 +183,38 @@ describe("applyWorkflowConfig", () => {
 
     expect(config.agent.plan.permission.submit_plan).toBe("allow");
     expect(config.agent.planner.permission.submit_plan).toBe("allow");
+    expect(config.agent.build.permission.submit_plan).toBe("deny");
+  });
+
+  test("plan-agent mode resolves planningAgents to existing display-named agents", () => {
+    const prometheusKey = "\u200B\u200B\u200BPrometheus - Plan Builder";
+    const sisyphusKey = "Sisyphus (Ultraworker)";
+    const config: any = {
+      agent: {
+        [prometheusKey]: {
+          mode: "primary",
+          permission: {},
+        },
+        [sisyphusKey]: {
+          mode: "primary",
+          permission: {},
+        },
+      },
+    };
+
+    applyWorkflowConfig(
+      config,
+      normalizeWorkflowOptions({
+        workflow: "plan-agent",
+        planningAgents: ["prometheus", "sisyphus"],
+      }),
+      false,
+    );
+
+    expect(config.agent[prometheusKey].permission.submit_plan).toBe("allow");
+    expect(config.agent[sisyphusKey].permission.submit_plan).toBe("allow");
+    expect(config.agent.prometheus).toBeUndefined();
+    expect(config.agent.sisyphus).toBeUndefined();
     expect(config.agent.build.permission.submit_plan).toBe("deny");
   });
 

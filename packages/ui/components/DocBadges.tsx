@@ -18,7 +18,6 @@ import { hostnameOrFallback } from '@plannotator/shared/project';
 export interface DocBadgesProps {
   layout: 'column' | 'row';
   repoInfo?: { display: string; branch?: string } | null;
-  cwd?: string | null;
   planDiffStats?: PlanDiffStats | null;
   isPlanDiffActive?: boolean;
   hasPreviousVersion?: boolean;
@@ -33,7 +32,6 @@ export interface DocBadgesProps {
 export const DocBadges: React.FC<DocBadgesProps> = ({
   layout,
   repoInfo,
-  cwd,
   planDiffStats,
   isPlanDiffActive,
   hasPreviousVersion,
@@ -50,7 +48,7 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
   // will truly produce visible output to avoid an empty wrapper div.
   const anything = isRow
     ? (!linkedDocInfo && ((hasPreviousVersion && planDiffStats) || archiveInfo))
-: repoInfo || cwd || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo || sourceInfo;
+    : repoInfo || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo || sourceInfo;
   if (!anything) return null;
 
   // Row layout: single horizontal line. Column layout: stacked rows.
@@ -63,17 +61,15 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
       {/* Row layout (sticky lane) omits repo/branch to keep the bar compact —
           they'd otherwise push the container wide enough to visually extend
           under the action buttons. Plan-diff badge still renders below. */}
-      {(repoInfo || cwd) && !linkedDocInfo && !isRow && (
+      {repoInfo && !linkedDocInfo && !isRow && (
         <div className="flex items-center gap-1.5">
-          {repoInfo && (
-            <span
-              className="px-1.5 py-0.5 bg-muted/50 rounded truncate max-w-[140px]"
-              title={repoInfo.display}
-            >
-              {repoInfo.display}
-            </span>
-          )}
-          {repoInfo?.branch && (
+          <span
+            className="px-1.5 py-0.5 bg-muted/50 rounded truncate max-w-[140px]"
+            title={repoInfo.display}
+          >
+            {repoInfo.display}
+          </span>
+          {repoInfo.branch && (
             <span
               className="px-1.5 py-0.5 bg-muted/30 rounded max-w-[120px] flex items-center gap-1 overflow-hidden"
               title={repoInfo.branch}
@@ -82,17 +78,6 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
                 <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" />
               </svg>
               <span className="truncate">{repoInfo.branch}</span>
-            </span>
-          )}
-          {cwd && (
-            <span
-              className="px-1.5 py-0.5 bg-muted/30 rounded max-w-[200px] flex items-center gap-1 overflow-hidden font-mono"
-              title={cwd}
-            >
-              <svg className="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-              </svg>
-              <span className="truncate">{cwd.split('/').pop() || cwd}</span>
             </span>
           )}
         </div>

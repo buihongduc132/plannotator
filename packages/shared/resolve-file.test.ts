@@ -1,283 +1,113 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { join, resolve } from "path";
-import { mkdirSync, writeFileSync, rmSync } from "fs";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
-import {
-  expandHomePath,
-  stripWrappingQuotes,
-  normalizeUserPathInput,
-  isAbsoluteUserPath,
-  resolveUserPath,
-  isWithinProjectRoot,
-  resolveMarkdownFile,
-  hasMarkdownFiles,
-} from "./resolve-file";
+import { join } from "path";
+import { resolveCodeFile } from "./resolve-file";
 
-const TEST_DIR = join(tmpdir(), `plannotator-test-resolve-${Date.now()}`);
+let root: string;
 
-beforeEach(() => {
-  mkdirSync(TEST_DIR, { recursive: true });
+beforeAll(() => {
+	root = mkdtempSync(join(tmpdir(), "plannotator-resolve-"));
+	mkdirSync(join(root, "packages/editor"), { recursive: true });
+	mkdirSync(join(root, "packages/review-editor"), { recursive: true });
+	mkdirSync(join(root, "packages/ui/components"), { recursive: true });
+	mkdirSync(join(root, "node_modules/junk"), { recursive: true });
+	writeFileSync(join(root, "packages/editor/App.tsx"), "// editor");
+	writeFileSync(join(root, "packages/review-editor/App.tsx"), "// review");
+	writeFileSync(join(root, "packages/ui/components/Button.tsx"), "// btn");
+	writeFileSync(join(root, "packages/ui/index.ts"), "// idx");
+	writeFileSync(join(root, "node_modules/junk/App.tsx"), "// junk");
 });
 
-afterEach(() => {
-  try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
+afterAll(() => {
+	rmSync(root, { recursive: true, force: true });
 });
 
-describe("expandHomePath", () => {
-  test("expands ~ to home dir", () => {
-    expect(expandHomePath("~", "/home/user")).toBe("/home/user");
-  });
+describe("resolveCodeFile", () => {
+	test("resolves an exact relative path", async () => {
+		const r = await resolveCodeFile("packages/editor/App.tsx", root);
+		expect(r.kind).toBe("found");
+		if (r.kind === "found") {
+			expect(r.path).toBe(join(root, "packages/editor/App.tsx"));
+		}
+	});
 
-  test("expands ~/path to home + path", () => {
-    expect(expandHomePath("~/documents/file.md", "/home/user")).toBe("/home/user/documents/file.md");
-  });
+	test("resolves an abbreviated path via suffix match", async () => {
+		const r = await resolveCodeFile("editor/App.tsx", root);
+		expect(r.kind).toBe("found");
+		if (r.kind === "found") {
+			expect(r.path).toBe(join(root, "packages/editor/App.tsx"));
+		}
+	});
 
-  test("expands ~\\path on Windows style", () => {
-    expect(expandHomePath("~\\documents", "/home/user")).toBe("/home/user/documents");
-  });
+	test("returns ambiguous when basename matches multiple files", async () => {
+		const r = await resolveCodeFile("App.tsx", root);
+		expect(r.kind).toBe("ambiguous");
+		if (r.kind === "ambiguous") {
+			expect(r.matches).toHaveLength(2);
+		}
+	});
 
-  test("does not expand ~ in middle of path", () => {
-    expect(expandHomePath("/path/~other/file", "/home/user")).toBe("/path/~other/file");
-  });
+	test("returns not_found for a non-existent path", async () => {
+		const r = await resolveCodeFile("packages/ui/shortcuts/core.ts", root);
+		expect(r.kind).toBe("not_found");
+	});
 
-  test("does not expand paths without ~", () => {
-    expect(expandHomePath("/absolute/path", "/home/user")).toBe("/absolute/path");
-  });
+	test("ignores node_modules", async () => {
+		const r = await resolveCodeFile("junk/App.tsx", root);
+		expect(r.kind).toBe("not_found");
+	});
 
-  test("handles relative paths", () => {
-    expect(expandHomePath("relative/path", "/home/user")).toBe("relative/path");
-  });
-});
+	test("does not match similarly-named directories", async () => {
+		// myeditor/App.tsx must NOT match packages/editor/App.tsx — segment boundary required.
+		const r = await resolveCodeFile("myeditor/App.tsx", root);
+		expect(r.kind).toBe("not_found");
+	});
 
-describe("stripWrappingQuotes", () => {
-  test("strips double quotes", () => {
-    expect(stripWrappingQuotes('"hello.md"')).toBe("hello.md");
-  });
+	test("returns found for a single-segment input that uniquely exists", async () => {
+		// `index.ts` is bare basename; only one in tree.
+		const r = await resolveCodeFile("index.ts", root);
+		expect(r.kind).toBe("found");
+		if (r.kind === "found") {
+			expect(r.path).toBe(join(root, "packages/ui/index.ts"));
+		}
+	});
 
-  test("strips single quotes", () => {
-    expect(stripWrappingQuotes("'hello.md'")).toBe("hello.md");
-  });
+	test("strips leading ./ before suffix matching", async () => {
+		// Earlier this fell through to step 3 with target='./editor/app.tsx'
+		// and never matched any real file. The cleanup makes it work.
+		const r = await resolveCodeFile("./editor/App.tsx", root);
+		expect(r.kind).toBe("found");
+		if (r.kind === "found") {
+			expect(r.path).toBe(join(root, "packages/editor/App.tsx"));
+		}
+	});
 
-  test("does not strip mismatched quotes", () => {
-    expect(stripWrappingQuotes('"hello.md')).toBe('"hello.md');
-    expect(stripWrappingQuotes("hello.md'")).toBe("hello.md'");
-  });
+	test("does NOT strip leading ../ — without baseDir, refuses to fabricate", async () => {
+		// `../foo.tsx` is meaningful (escape parent). With no baseDir context,
+		// we can't honor it, so we must fail rather than silently returning
+		// an unrelated file with the same basename from inside cwd.
+		const r = await resolveCodeFile("../editor/App.tsx", root);
+		expect(r.kind).toBe("not_found");
+	});
 
-  test("does not strip quotes in middle", () => {
-    expect(stripWrappingQuotes('he"llo.md')).toBe('he"llo.md');
-  });
+	test("resolves via baseDir when input is relative to active doc", async () => {
+		// Linked doc at `<root>/packages/review-editor/...` references `../editor/App.tsx`
+		const baseDir = join(root, "packages/review-editor");
+		const r = await resolveCodeFile("../editor/App.tsx", root, baseDir);
+		expect(r.kind).toBe("found");
+		if (r.kind === "found") {
+			expect(r.path).toBe(join(root, "packages/editor/App.tsx"));
+		}
+	});
 
-  test("returns short strings unchanged", () => {
-    expect(stripWrappingQuotes("a")).toBe("a");
-    expect(stripWrappingQuotes('""')).toBe("");
-  });
-
-  test("handles empty string", () => {
-    expect(stripWrappingQuotes("")).toBe("");
-  });
-});
-
-describe("normalizeUserPathInput", () => {
-  test("trims whitespace", () => {
-    expect(normalizeUserPathInput("  /path/to/file  ", "linux")).toBe("/path/to/file");
-  });
-
-  test("strips wrapping quotes", () => {
-    expect(normalizeUserPathInput('"/path/to/file"', "linux")).toBe("/path/to/file");
-  });
-
-  test("expands home directory", () => {
-    const result = normalizeUserPathInput("~/file.md", "linux");
-    expect(result).not.toContain("~");
-  });
-
-  test("handles Windows paths on win32", () => {
-    const result = normalizeUserPathInput("/c/Users/test/file.md", "win32");
-    expect(result).toMatch(/^C:/);
-  });
-
-  test("handles Linux paths on linux", () => {
-    expect(normalizeUserPathInput("/home/user/file.md", "linux")).toBe("/home/user/file.md");
-  });
-
-  test("handles /cygdrive/ paths on win32", () => {
-    const result = normalizeUserPathInput("/cygdrive/d/projects/file.md", "win32");
-    expect(result).toMatch(/^D:/);
-  });
-});
-
-describe("isAbsoluteUserPath", () => {
-  test("recognizes absolute Linux path", () => {
-    expect(isAbsoluteUserPath("/home/user/file.md", "linux")).toBe(true);
-  });
-
-  test("recognizes relative path", () => {
-    expect(isAbsoluteUserPath("relative/path.md", "linux")).toBe(false);
-  });
-
-  test("recognizes ~ as relative (after expansion it becomes absolute)", () => {
-    // ~/file expands to absolute, but before expansion ~ is relative
-    // isAbsoluteUserPath normalizes first then checks
-    const result = isAbsoluteUserPath("~/file.md", "linux");
-    expect(result).toBe(true); // ~ expands to absolute
-  });
-
-  test("recognizes Windows drive letter path as absolute", () => {
-    expect(isAbsoluteUserPath("C:\\Users\\file.md", "linux")).toBe(true);
-  });
-});
-
-describe("resolveUserPath", () => {
-  test("resolves absolute path", () => {
-    const result = resolveUserPath("/home/user/file.md", "/base", "linux");
-    expect(result).toBe("/home/user/file.md");
-  });
-
-  test("resolves relative path against base", () => {
-    const result = resolveUserPath("docs/file.md", "/project", "linux");
-    expect(result).toBe("/project/docs/file.md");
-  });
-
-  test("resolves ~ path to home", () => {
-    const result = resolveUserPath("~/file.md", "/project", "linux");
-    expect(result).toContain(process.env.HOME || "");
-    expect(result).not.toContain("~");
-  });
-
-  test("returns empty for empty input", () => {
-    const result = resolveUserPath("", "/base", "linux");
-    expect(result).toBe("");
-  });
-
-  test("handles quoted paths", () => {
-    const result = resolveUserPath('"/absolute/path.md"', "/base", "linux");
-    expect(result).toBe("/absolute/path.md");
-  });
-});
-
-describe("isWithinProjectRoot", () => {
-  test("same path is within", () => {
-    expect(isWithinProjectRoot("/project", "/project")).toBe(true);
-  });
-
-  test("subdirectory is within", () => {
-    expect(isWithinProjectRoot("/project/src/file.md", "/project")).toBe(true);
-  });
-
-  test("sibling directory is not within", () => {
-    expect(isWithinProjectRoot("/other/file.md", "/project")).toBe(false);
-  });
-
-  test("traversal attack is not within", () => {
-    expect(isWithinProjectRoot("/project/../etc/passwd", "/project")).toBe(false);
-  });
-
-  test("handles trailing slashes", () => {
-    expect(isWithinProjectRoot("/project/file.md", "/project/")).toBe(true);
-  });
-});
-
-describe("resolveMarkdownFile", () => {
-  test("returns not_found for non-markdown files", () => {
-    const result = resolveMarkdownFile("script.ts", TEST_DIR);
-    expect(result.kind).toBe("not_found");
-  });
-
-  test("returns found for existing absolute markdown file", () => {
-    const filePath = join(TEST_DIR, "README.md");
-    writeFileSync(filePath, "# Test");
-    const result = resolveMarkdownFile(filePath, TEST_DIR);
-    expect(result.kind).toBe("found");
-    if (result.kind === "found") {
-      expect(result.path).toBe(resolve(filePath));
-    }
-  });
-
-  test("returns not_found for missing absolute path", () => {
-    const result = resolveMarkdownFile("/nonexistent/path.md", TEST_DIR);
-    expect(result.kind).toBe("not_found");
-  });
-
-  test("returns found for relative markdown in project root", () => {
-    writeFileSync(join(TEST_DIR, "guide.md"), "# Guide");
-    const result = resolveMarkdownFile("guide.md", TEST_DIR);
-    expect(result.kind).toBe("found");
-  });
-
-  test("returns found for .mdx files", () => {
-    writeFileSync(join(TEST_DIR, "page.mdx"), "# Page");
-    const result = resolveMarkdownFile("page.mdx", TEST_DIR);
-    expect(result.kind).toBe("found");
-  });
-
-  test("returns not_found for missing relative file", () => {
-    const result = resolveMarkdownFile("missing.md", TEST_DIR);
-    expect(result.kind).toBe("not_found");
-  });
-
-  test("returns ambiguous for multiple case-insensitive matches", () => {
-    mkdirSync(join(TEST_DIR, "sub1"), { recursive: true });
-    mkdirSync(join(TEST_DIR, "sub2"), { recursive: true });
-    writeFileSync(join(TEST_DIR, "sub1", "Guide.md"), "# Guide 1");
-    writeFileSync(join(TEST_DIR, "sub2", "Guide.md"), "# Guide 2");
-    const result = resolveMarkdownFile("guide.md", TEST_DIR);
-    expect(result.kind).toBe("ambiguous");
-    if (result.kind === "ambiguous") {
-      expect(result.matches.length).toBe(2);
-    }
-  });
-
-  test("strips @ prefix and retries", () => {
-    writeFileSync(join(TEST_DIR, "notes.md"), "# Notes");
-    const result = resolveMarkdownFile("@notes.md", TEST_DIR);
-    expect(result.kind).toBe("found");
-  });
-
-  test("returns not_found when @ path doesn't resolve", () => {
-    const result = resolveMarkdownFile("@nonexistent.md", TEST_DIR);
-    expect(result.kind).toBe("not_found");
-  });
-
-  test("handles empty string", () => {
-    const result = resolveMarkdownFile("", TEST_DIR);
-    expect(result.kind).toBe("not_found");
-  });
-});
-
-describe("hasMarkdownFiles", () => {
-  test("returns true for directory with .md file", () => {
-    writeFileSync(join(TEST_DIR, "README.md"), "# Readme");
-    expect(hasMarkdownFiles(TEST_DIR)).toBe(true);
-  });
-
-  test("returns true for directory with .mdx file", () => {
-    writeFileSync(join(TEST_DIR, "page.mdx"), "# Page");
-    expect(hasMarkdownFiles(TEST_DIR)).toBe(true);
-  });
-
-  test("returns false for directory without markdown", () => {
-    writeFileSync(join(TEST_DIR, "script.ts"), "console.log('hi')");
-    expect(hasMarkdownFiles(TEST_DIR)).toBe(false);
-  });
-
-  test("returns false for nonexistent directory", () => {
-    expect(hasMarkdownFiles("/nonexistent/path")).toBe(false);
-  });
-
-  test("skips ignored directories", () => {
-    mkdirSync(join(TEST_DIR, "node_modules"), { recursive: true });
-    writeFileSync(join(TEST_DIR, "node_modules", "package.md"), "# Package");
-    expect(hasMarkdownFiles(TEST_DIR)).toBe(false);
-  });
-
-  test("finds markdown in nested directories", () => {
-    mkdirSync(join(TEST_DIR, "docs", "guides"), { recursive: true });
-    writeFileSync(join(TEST_DIR, "docs", "guides", "intro.md"), "# Intro");
-    expect(hasMarkdownFiles(TEST_DIR)).toBe(true);
-  });
-
-  test("respects custom extensions", () => {
-    writeFileSync(join(TEST_DIR, "data.yaml"), "key: value");
-    expect(hasMarkdownFiles(TEST_DIR, [], /\.ya?ml$/)).toBe(true);
-  });
+	test("baseDir miss falls through to suffix walk", async () => {
+		// baseDir doesn't have the file, but cwd tree does — walk catches it.
+		const baseDir = join(root, "packages/review-editor");
+		const r = await resolveCodeFile("ui/components/Button.tsx", root, baseDir);
+		expect(r.kind).toBe("found");
+		if (r.kind === "found") {
+			expect(r.path).toBe(join(root, "packages/ui/components/Button.tsx"));
+		}
+	});
 });

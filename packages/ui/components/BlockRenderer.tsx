@@ -11,6 +11,7 @@ import { TableBlock } from "./blocks/TableBlock";
 export const BlockRenderer: React.FC<{
   block: Block;
   onOpenLinkedDoc?: (path: string) => void;
+  onOpenCodeFile?: (path: string) => void;
   imageBaseDir?: string;
   onImageClick?: (src: string, alt: string) => void;
   onToggleCheckbox?: (blockId: string, checked: boolean) => void;
@@ -19,7 +20,7 @@ export const BlockRenderer: React.FC<{
   githubRepo?: string;
   headingAnchorId?: string;
   onNavigateAnchor?: (hash: string) => void;
-}> = ({ block, onOpenLinkedDoc, imageBaseDir, onImageClick, onToggleCheckbox, checkboxOverrides, orderedIndex, githubRepo, headingAnchorId, onNavigateAnchor }) => {
+}> = ({ block, onOpenLinkedDoc, onOpenCodeFile, imageBaseDir, onImageClick, onToggleCheckbox, checkboxOverrides, orderedIndex, githubRepo, headingAnchorId, onNavigateAnchor }) => {
   switch (block.type) {
     case 'heading': {
       const Tag = `h${block.level || 1}` as React.ElementType;
@@ -35,7 +36,7 @@ export const BlockRenderer: React.FC<{
           data-block-id={block.id}
           data-block-type="heading"
         >
-          <InlineMarkdown imageBaseDir={imageBaseDir} onImageClick={onImageClick} text={block.content} onOpenLinkedDoc={onOpenLinkedDoc} githubRepo={githubRepo} onNavigateAnchor={onNavigateAnchor} />
+          <InlineMarkdown imageBaseDir={imageBaseDir} onImageClick={onImageClick} text={block.content} onOpenLinkedDoc={onOpenLinkedDoc} onOpenCodeFile={onOpenCodeFile} githubRepo={githubRepo} onNavigateAnchor={onNavigateAnchor} />
         </Tag>
       );
     }
@@ -48,6 +49,7 @@ export const BlockRenderer: React.FC<{
             kind={block.alertKind}
             body={block.content}
             onOpenLinkedDoc={onOpenLinkedDoc}
+            onOpenCodeFile={onOpenCodeFile}
             imageBaseDir={imageBaseDir}
             onImageClick={onImageClick}
             githubRepo={githubRepo}
@@ -65,7 +67,7 @@ export const BlockRenderer: React.FC<{
         >
           {paragraphs.map((para, i) => (
             <p key={i} className={i > 0 ? 'mt-2' : ''}>
-              <InlineMarkdown imageBaseDir={imageBaseDir} onImageClick={onImageClick} text={para} onOpenLinkedDoc={onOpenLinkedDoc} githubRepo={githubRepo} onNavigateAnchor={onNavigateAnchor} />
+              <InlineMarkdown imageBaseDir={imageBaseDir} onImageClick={onImageClick} text={para} onOpenLinkedDoc={onOpenLinkedDoc} onOpenCodeFile={onOpenCodeFile} githubRepo={githubRepo} onNavigateAnchor={onNavigateAnchor} />
             </p>
           ))}
         </blockquote>
@@ -79,6 +81,9 @@ export const BlockRenderer: React.FC<{
         ? checkboxOverrides.get(block.id)!
         : block.checked;
       const isInteractive = isCheckbox && !!onToggleCheckbox;
+      const textClass = `text-sm leading-relaxed ${isCheckbox && isChecked ? 'text-muted-foreground line-through' : 'text-foreground/90'}`;
+      const paragraphs = block.content.split(/\n\n+/);
+      const inlineProps = { imageBaseDir, onImageClick, onOpenLinkedDoc, onOpenCodeFile, githubRepo, onNavigateAnchor };
       return (
         <div
           className="flex items-start gap-3 my-1.5"
@@ -93,9 +98,19 @@ export const BlockRenderer: React.FC<{
             interactive={isInteractive}
             onToggle={isInteractive ? () => onToggleCheckbox!(block.id, !isChecked) : undefined}
           />
-          <span className={`text-sm leading-relaxed ${isCheckbox && isChecked ? 'text-muted-foreground line-through' : 'text-foreground/90'}`}>
-            <InlineMarkdown imageBaseDir={imageBaseDir} onImageClick={onImageClick} text={block.content} onOpenLinkedDoc={onOpenLinkedDoc} githubRepo={githubRepo} onNavigateAnchor={onNavigateAnchor} />
-          </span>
+          {paragraphs.length === 1 ? (
+            <span className={textClass}>
+              <InlineMarkdown {...inlineProps} text={block.content} />
+            </span>
+          ) : (
+            <div className={textClass}>
+              {paragraphs.map((para, i) => (
+                <p key={i} className={i > 0 ? 'mt-3' : ''}>
+                  <InlineMarkdown {...inlineProps} text={para} />
+                </p>
+              ))}
+            </div>
+          )}
         </div>
       );
     }
@@ -110,6 +125,7 @@ export const BlockRenderer: React.FC<{
           imageBaseDir={imageBaseDir}
           onImageClick={onImageClick}
           onOpenLinkedDoc={onOpenLinkedDoc}
+          onOpenCodeFile={onOpenCodeFile}
           githubRepo={githubRepo}
           onNavigateAnchor={onNavigateAnchor}
         />
@@ -119,7 +135,7 @@ export const BlockRenderer: React.FC<{
       return <hr className="border-border/30 my-8" data-block-id={block.id} />;
 
     case 'html':
-      return <HtmlBlock block={block} imageBaseDir={imageBaseDir} onOpenLinkedDoc={onOpenLinkedDoc} onNavigateAnchor={onNavigateAnchor} />;
+      return <HtmlBlock block={block} imageBaseDir={imageBaseDir} onOpenLinkedDoc={onOpenLinkedDoc} onOpenCodeFile={onOpenCodeFile} onNavigateAnchor={onNavigateAnchor} />;
 
     case 'directive': {
       const kind = block.directiveKind || 'note';
@@ -132,6 +148,7 @@ export const BlockRenderer: React.FC<{
           blockType="directive"
           kindAttribute={kind}
           onOpenLinkedDoc={onOpenLinkedDoc}
+          onOpenCodeFile={onOpenCodeFile}
           imageBaseDir={imageBaseDir}
           onImageClick={onImageClick}
           githubRepo={githubRepo}
@@ -146,7 +163,7 @@ export const BlockRenderer: React.FC<{
           className="mb-4 leading-relaxed text-foreground/90 text-[15px]"
           data-block-id={block.id}
         >
-          <InlineMarkdown imageBaseDir={imageBaseDir} onImageClick={onImageClick} text={block.content} onOpenLinkedDoc={onOpenLinkedDoc} githubRepo={githubRepo} onNavigateAnchor={onNavigateAnchor} />
+          <InlineMarkdown imageBaseDir={imageBaseDir} onImageClick={onImageClick} text={block.content} onOpenLinkedDoc={onOpenLinkedDoc} onOpenCodeFile={onOpenCodeFile} githubRepo={githubRepo} onNavigateAnchor={onNavigateAnchor} />
         </p>
       );
   }

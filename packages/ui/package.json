@@ -4,16 +4,20 @@
   "type": "module",
   "exports": {
     "./components/*": "./components/*.tsx",
+    "./components/core/*": "./components/core/*.tsx",
+    "./components/goal-setup/*": "./components/goal-setup/*.tsx",
     "./components/ImageAnnotator": "./components/ImageAnnotator/index.tsx",
     "./components/sidebar/*": "./components/sidebar/*.tsx",
     "./components/plan-diff/*": "./components/plan-diff/*.tsx",
     "./utils/*": "./utils/*.ts",
     "./hooks/*": "./hooks/*.ts",
+    "./shortcuts": "./shortcuts/index.ts",
     "./config": "./config/index.ts",
     "./types": "./types.ts",
     "./theme": "./theme.css"
   },
   "dependencies": {
+    "@pierre/diffs": "^1.1.12",
     "@plannotator/shared": "workspace:*",
     "@plannotator/web-highlighter": "^0.8.1",
     "@radix-ui/react-dialog": "^1.1.15",
@@ -23,6 +27,7 @@
     "@viz-js/viz": "^3.25.0",
     "diff": "^8.0.3",
     "highlight.js": "^11.11.1",
+    "lucide-react": "^1.14.0",
     "marked": "^17.0.6",
     "mermaid": "^11.12.2",
     "overlayscrollbars": "^2.11.0",
@@ -34,8 +39,7 @@
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",
-    "@types/dompurify": "^3.0.5",
-    "@types/react": "^19.2.0",
+"@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "typescript": "~5.8.2"
   },

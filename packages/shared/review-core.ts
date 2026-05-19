@@ -7,13 +7,21 @@
 
 import { resolve as resolvePath } from "node:path";
 
+export const JJ_TRUNK_REVSET = "trunk()";
+
 export type DiffType =
   | "uncommitted"
   | "staged"
   | "unstaged"
   | "last-commit"
+  | "jj-current"
+  | "jj-last"
+  | "jj-line"
+  | "jj-all"
+  | "jj-evolog"
   | "branch"
   | "merge-base"
+  | "all"
   | `worktree:${string}`
   | "p4-default"
   | `p4-changelist:${string}`;
@@ -34,14 +42,62 @@ export interface AvailableBranches {
   remote: string[];
 }
 
+export interface CompareTargetPickerCopy {
+  rowLabel: string;
+  triggerLabel: string;
+  triggerTitlePrefix: string;
+  searchPlaceholder: string;
+  emptyText: string;
+  localGroupLabel: string;
+  remoteGroupLabel: string;
+}
+
+export interface CompareTargetConfig {
+  diffTypes: string[];
+  fallback: string;
+  picker: CompareTargetPickerCopy;
+}
+
+export interface RepositoryContext {
+  displayFallback?: string;
+}
+
+export interface JjEvoLogEntry {
+  /** Short commit ID (12 hex chars) */
+  commitId: string;
+  /** First line of the commit message */
+  description: string;
+  /** Human-readable age string, e.g. "2 hours ago" */
+  age?: string;
+}
+
+export interface RecentCommit {
+  /** Full SHA — sent back as the diff base. */
+  sha: string;
+  /** Abbreviated SHA for display. */
+  shortSha: string;
+  /** First line of the commit message. */
+  subject: string;
+  /** Human-readable age string, e.g. "2 hours ago". */
+  relativeDate: string;
+  /** Committer-name; shown after the subject in the picker. */
+  author: string;
+}
+
 export interface GitContext {
   currentBranch: string;
   defaultBranch: string;
   diffOptions: DiffOption[];
   worktrees: WorktreeInfo[];
   availableBranches: AvailableBranches;
+  compareTarget?: CompareTargetConfig;
+  repository?: RepositoryContext;
   cwd?: string;
-  vcsType?: "git" | "p4";
+  vcsType?: "git" | "jj" | "p4";
+  /** Evolution log entries for the current jj change (jj only). */
+  jjEvologs?: JjEvoLogEntry[];
+  /** HEAD ancestry, newest first. Powers the commit-based baseline picker (#709). */
+  recentCommits?: RecentCommit[];
 }
 
 export interface DiffResult {
@@ -62,6 +118,40 @@ export interface ReviewGitRuntime {
     options?: { cwd?: string; timeoutMs?: number },
   ) => Promise<GitCommandResult>;
   readTextFile: (path: string) => Promise<string | null>;
+}
+
+export interface GitDiffOptions {
+  hideWhitespace?: boolean;
+}
+
+export function parseRemoteBookmark(target: string): { name: string; remote: string } | null {
+  const at = target.lastIndexOf("@");
+  if (at <= 0 || at === target.length - 1) return null;
+  return { name: target.slice(0, at), remote: target.slice(at + 1) };
+}
+
+export function jjCompareTargetRevset(target: string): string {
+  const remoteBookmark = parseRemoteBookmark(target);
+  if (remoteBookmark) {
+    return `remote_bookmarks(exact:${quoteJjString(remoteBookmark.name)}, exact:${quoteJjString(remoteBookmark.remote)})`;
+  }
+
+  const localBookmark = parseJjBookmarkName(target);
+  return localBookmark ? `bookmarks(exact:${quoteJjString(localBookmark)})` : target;
+}
+
+export function jjLineBaseRevset(target: string): string {
+  const compareTarget = jjCompareTargetRevset(target);
+  return `heads(::@ & ::(${compareTarget}))`;
+}
+
+function parseJjBookmarkName(target: string): string | null {
+  if (!target || target.startsWith("@") || /[()\s]/.test(target)) return null;
+  return target;
+}
+
+function quoteJjString(value: string): string {
+  return JSON.stringify(value);
 }
 
 export async function getCurrentBranch(
@@ -141,6 +231,45 @@ export async function detectRemoteDefaultBranch(
   } catch {
     return null;
   }
+}
+
+const RECENT_COMMIT_LIMIT_DEFAULT = 20;
+// US (\x1F) separator avoids collisions with commit subjects, author names, and
+// dates while staying compatible with `git log --pretty=format`.
+const COMMIT_FIELD_SEP = "\x1f";
+
+/**
+ * Walk HEAD's ancestry and return the most-recent commits for the
+ * commit-baseline picker. Single `git log` call — fast (~ms).
+ */
+export async function listRecentCommits(
+  runtime: ReviewGitRuntime,
+  cwd?: string,
+  limit: number = RECENT_COMMIT_LIMIT_DEFAULT,
+): Promise<RecentCommit[]> {
+  const fmt = ["%H", "%h", "%s", "%cr", "%an"].join(COMMIT_FIELD_SEP);
+  const result = await runtime.runGit(
+    ["log", `--max-count=${limit}`, `--pretty=format:${fmt}`, "HEAD"],
+    { cwd },
+  );
+  if (result.exitCode !== 0) return [];
+
+  const commits: RecentCommit[] = [];
+  for (const line of result.stdout.split("\n")) {
+    if (!line) continue;
+    const parts = line.split(COMMIT_FIELD_SEP);
+    if (parts.length < 5) continue;
+    // If a subject contains a literal US byte the split over-divides. sha/
+    // shortSha are fixed-shape at the start and relativeDate/author at the
+    // end, so rejoin everything between back into the subject.
+    const sha = parts[0];
+    const shortSha = parts[1];
+    const author = parts[parts.length - 1];
+    const relativeDate = parts[parts.length - 2];
+    const subject = parts.slice(2, parts.length - 2).join(COMMIT_FIELD_SEP);
+    commits.push({ sha, shortSha, subject, relativeDate, author });
+  }
+  return commits;
 }
 
 export async function listBranches(
@@ -249,10 +378,11 @@ export async function getGitContext(
   runtime: ReviewGitRuntime,
   cwd?: string,
 ): Promise<GitContext> {
-  const [currentBranch, defaultBranch, availableBranches] = await Promise.all([
+  const [currentBranch, defaultBranch, availableBranches, recentCommits] = await Promise.all([
     getCurrentBranch(runtime, cwd),
     getDefaultBranch(runtime, cwd),
     listBranches(runtime, cwd),
+    listRecentCommits(runtime, cwd),
   ]);
 
   const diffOptions: DiffOption[] = [
@@ -272,9 +402,10 @@ export async function getGitContext(
   // old guard hid the active mode's option, trapping them. Unconditional
   // emission keeps the active option reachable in every flow.
   if (defaultBranch) {
-    diffOptions.push({ id: "branch", label: `vs ${defaultBranch}` });
-    diffOptions.push({ id: "merge-base", label: `Current PR Diff` });
+    diffOptions.push({ id: "merge-base", label: "Committed changes" });
   }
+
+  diffOptions.push({ id: "all", label: "All files (HEAD)" });
 
   const [worktrees, currentTreePathResult] = await Promise.all([
     getWorktrees(runtime, cwd),
@@ -292,7 +423,22 @@ export async function getGitContext(
     diffOptions,
     worktrees: worktrees.filter((wt) => wt.path !== currentTreePath),
     availableBranches,
+    compareTarget: {
+      diffTypes: ["branch", "merge-base"],
+      fallback: "main",
+      picker: {
+        rowLabel: "compare against",
+        triggerLabel: "base",
+        triggerTitlePrefix: "Review base",
+        searchPlaceholder: "Search branches…",
+        emptyText: "No branches match.",
+        localGroupLabel: "Local",
+        remoteGroupLabel: "Remote",
+      },
+    },
     cwd,
+    vcsType: "git",
+    recentCommits,
   };
 }
 
@@ -301,6 +447,7 @@ async function getUntrackedFileDiffs(
   srcPrefix = "a/",
   dstPrefix = "b/",
   cwd?: string,
+  options?: GitDiffOptions,
 ): Promise<string> {
   // git ls-files scopes to the CWD subtree and returns CWD-relative paths,
   // unlike git diff HEAD which always covers the full repo with root-relative
@@ -332,6 +479,7 @@ async function getUntrackedFileDiffs(
         [
           "diff",
           "--no-ext-diff",
+          ...(options?.hideWhitespace ? ["-w"] : []),
           "--no-index",
           `--src-prefix=${srcPrefix}`,
           `--dst-prefix=${dstPrefix}`,
@@ -345,6 +493,14 @@ async function getUntrackedFileDiffs(
   );
 
   return diffs.join("");
+}
+
+/**
+ * If `ref` looks like a full or long hex SHA, return its 7-char prefix for
+ * display. Branch names, tags, and `HEAD~N` pass through unchanged.
+ */
+function displayRef(ref: string): string {
+  return /^[0-9a-f]{7,}$/i.test(ref) ? ref.slice(0, 7) : ref;
 }
 
 function assertGitSuccess(
@@ -369,6 +525,7 @@ const WORKTREE_SUB_TYPES = new Set([
   "last-commit",
   "branch",
   "merge-base",
+  "all",
 ]);
 
 export function parseWorktreeDiffType(
@@ -393,6 +550,7 @@ export async function runGitDiff(
   diffType: DiffType,
   defaultBranch: string = "main",
   externalCwd?: string,
+  options?: GitDiffOptions,
 ): Promise<DiffResult> {
   let patch = "";
   let label = "";
@@ -412,12 +570,15 @@ export async function runGitDiff(
     effectiveDiffType = parsed.subType;
   }
 
+  const wFlag = options?.hideWhitespace ? ["-w"] : [];
+
   try {
     switch (effectiveDiffType) {
       case "uncommitted": {
         const trackedDiffArgs = [
           "diff",
           "--no-ext-diff",
+          ...wFlag,
           "HEAD",
           "--src-prefix=a/",
           "--dst-prefix=b/",
@@ -436,6 +597,7 @@ export async function runGitDiff(
           "a/",
           "b/",
           cwd,
+          options,
         );
         patch = trackedPatch + untrackedDiff;
         label = "Uncommitted changes";
@@ -446,6 +608,7 @@ export async function runGitDiff(
         const stagedDiffArgs = [
           "diff",
           "--no-ext-diff",
+          ...wFlag,
           "--staged",
           "--src-prefix=a/",
           "--dst-prefix=b/",
@@ -460,7 +623,13 @@ export async function runGitDiff(
       }
 
       case "unstaged": {
-        const trackedDiffArgs = ["diff", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/"];
+        const trackedDiffArgs = [
+          "diff",
+          "--no-ext-diff",
+          ...wFlag,
+          "--src-prefix=a/",
+          "--dst-prefix=b/",
+        ];
         const trackedDiff = assertGitSuccess(
           await runtime.runGit(trackedDiffArgs, { cwd }),
           trackedDiffArgs,
@@ -470,6 +639,7 @@ export async function runGitDiff(
           "a/",
           "b/",
           cwd,
+          options,
         );
         patch = trackedDiff.stdout + untrackedDiff;
         label = "Unstaged changes";
@@ -483,8 +653,8 @@ export async function runGitDiff(
         );
         const args =
           hasParent.exitCode === 0
-            ? ["diff", "--no-ext-diff", "HEAD~1..HEAD", "--src-prefix=a/", "--dst-prefix=b/"]
-            : ["diff", "--no-ext-diff", "--root", "HEAD", "--src-prefix=a/", "--dst-prefix=b/"];
+            ? ["diff", "--no-ext-diff", ...wFlag, "HEAD~1..HEAD", "--src-prefix=a/", "--dst-prefix=b/"]
+            : ["diff", "--no-ext-diff", ...wFlag, "--root", "HEAD", "--src-prefix=a/", "--dst-prefix=b/"];
         const lastCommitDiff = assertGitSuccess(
           await runtime.runGit(args, { cwd }),
           args,
@@ -502,6 +672,7 @@ export async function runGitDiff(
         const branchDiffArgs = [
           "diff",
           "--no-ext-diff",
+          ...wFlag,
           "--src-prefix=a/",
           "--dst-prefix=b/",
           "--end-of-options",
@@ -512,7 +683,7 @@ export async function runGitDiff(
           branchDiffArgs,
         );
         patch = branchDiff.stdout;
-        label = `Changes vs ${defaultBranch}`;
+        label = `Changes vs ${displayRef(defaultBranch)}`;
         break;
       }
 
@@ -526,6 +697,7 @@ export async function runGitDiff(
         const mergeBaseDiffArgs = [
           "diff",
           "--no-ext-diff",
+          ...wFlag,
           "--src-prefix=a/",
           "--dst-prefix=b/",
           "--end-of-options",
@@ -536,7 +708,31 @@ export async function runGitDiff(
           mergeBaseDiffArgs,
         );
         patch = mergeBaseDiff.stdout;
-        label = `PR diff vs ${defaultBranch}`;
+        label = `PR diff vs ${displayRef(defaultBranch)}`;
+        break;
+      }
+
+      case "all": {
+        // Diff from the empty tree to HEAD — shows every tracked file as an addition.
+        const emptyTreeResult = await runtime.runGit(["hash-object", "-t", "tree", "/dev/null"], { cwd });
+        const emptyTree = emptyTreeResult.exitCode === 0
+          ? emptyTreeResult.stdout.trim()
+          : "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+        const allDiffArgs = [
+          "diff",
+          "--no-ext-diff",
+          ...wFlag,
+          "--src-prefix=a/",
+          "--dst-prefix=b/",
+          "--end-of-options",
+          `${emptyTree}..HEAD`,
+        ];
+        const allDiff = assertGitSuccess(
+          await runtime.runGit(allDiffArgs, { cwd }),
+          allDiffArgs,
+        );
+        patch = allDiff.stdout;
+        label = "All files";
         break;
       }
 
@@ -571,8 +767,9 @@ export async function runGitDiffWithContext(
   runtime: ReviewGitRuntime,
   diffType: DiffType,
   gitContext: GitContext,
+  options?: GitDiffOptions,
 ): Promise<DiffResult> {
-  return runGitDiff(runtime, diffType, gitContext.defaultBranch, gitContext.cwd);
+  return runGitDiff(runtime, diffType, gitContext.defaultBranch, gitContext.cwd, options);
 }
 
 export async function getFileContentsForDiff(
@@ -638,6 +835,11 @@ export async function getFileContentsForDiff(
         newContent: await gitShow("HEAD", filePath),
       };
     }
+    case "all":
+      return {
+        oldContent: null,
+        newContent: await gitShow("HEAD", filePath),
+      };
     default:
       return { oldContent: null, newContent: null };
   }

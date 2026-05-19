@@ -22,7 +22,6 @@ import {
   parseProcessTablePs,
   resolveSessionLogByAncestorPids,
   resolveSessionLogByCwdScan,
-  resolveSessionLogByPpid,
   type SessionLogEntry,
 } from "./session-log";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -823,6 +822,85 @@ describe("resolveSessionLogByAncestorPids", () => {
       cleanup();
     }
   });
+
+  test("prefers newer ghost session over stale metadata match (after /clear)", () => {
+    const { sessionsDir, projectsDir, cleanup } = makeTempDirs("ghost-clear");
+    try {
+      const cwd = "/tmp/fake-project-ghost";
+      const oldSessionId = "old-session-before-clear";
+      const newSessionId = "new-session-after-clear";
+
+      // Metadata still points to old session (stale after /clear)
+      writeSessionMeta(sessionsDir, 400, { sessionId: oldSessionId, cwd });
+
+      // Both logs exist; force mtime ordering via utimes
+      const { utimesSync } = require("node:fs");
+      const oldLog = writeSessionLog(projectsDir, cwd, oldSessionId, buildLog(
+        userPrompt("hello"),
+        assistantText("msg_old", "Doing well, thanks!")
+      ));
+      const past = new Date(Date.now() - 5000);
+      utimesSync(oldLog, past, past);
+
+      const newLog = writeSessionLog(projectsDir, cwd, newSessionId, buildLog(
+        userPrompt("Why is the sky blue?"),
+        assistantText("msg_new", "Rayleigh scattering")
+      ));
+
+      const result = resolveSessionLogByAncestorPids({
+        startPid: 400,
+        getParentPid: () => null,
+        sessionsDir,
+        projectsDir,
+      });
+
+      // Should prefer the ghost session (newer, unregistered)
+      expect(result).toBe(newLog);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("keeps PID-based result when newer log belongs to a concurrent session", () => {
+    const { sessionsDir, projectsDir, cleanup } = makeTempDirs("concurrent");
+    try {
+      const cwd = "/tmp/fake-project-concurrent";
+      const sessionA = "session-terminal-1";
+      const sessionB = "session-terminal-2";
+
+      // Both sessions have their own metadata (different PIDs)
+      writeSessionMeta(sessionsDir, 400, { sessionId: sessionA, cwd });
+      writeSessionMeta(sessionsDir, 500, { sessionId: sessionB, cwd });
+
+      // Terminal 1's log (older)
+      const { utimesSync } = require("node:fs");
+      const logA = writeSessionLog(projectsDir, cwd, sessionA, buildLog(
+        userPrompt("hello from terminal 1"),
+        assistantText("msg_a", "Response in terminal 1")
+      ));
+      const past = new Date(Date.now() - 5000);
+      utimesSync(logA, past, past);
+
+      // Terminal 2's log (more recently modified)
+      const logB = writeSessionLog(projectsDir, cwd, sessionB, buildLog(
+        userPrompt("hello from terminal 2"),
+        assistantText("msg_b", "Response in terminal 2")
+      ));
+
+      // From terminal 1's process tree, should get terminal 1's log
+      const result = resolveSessionLogByAncestorPids({
+        startPid: 400,
+        getParentPid: () => null,
+        sessionsDir,
+        projectsDir,
+      });
+
+      // Should keep the PID-based result (session B is registered, not a ghost)
+      expect(result).toBe(logA);
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 describe("resolveSessionLogByCwdScan", () => {
@@ -1056,54 +1134,6 @@ describe("resolveSessionLogByCwdScan (cross-platform cwd matching)", () => {
         projectsDir,
       });
       expect(result).toBe(log);
-    } finally {
-      cleanup();
-    }
-  });
-});
-
-// ── resolveSessionLogByPpid tests ──────────────────────────────────
-
-describe("resolveSessionLogByPpid", () => {
-  test("resolves when ppid has valid session metadata", () => {
-    const { sessionsDir, projectsDir, cleanup } = makeTempDirs("ppid-resolve");
-    try {
-      const sessionId = "ppid-test-session";
-      const cwd = join(projectsDir, "my-project");
-      mkdirSync(cwd, { recursive: true });
-
-      writeSessionMeta(sessionsDir, process.ppid, { sessionId, cwd });
-      const logPath = writeSessionLog(projectsDir, cwd, sessionId);
-
-      const result = resolveSessionLogByPpid({ sessionsDir, projectsDir });
-      expect(result).toBe(logPath);
-    } finally {
-      cleanup();
-    }
-  });
-
-  test("returns null when ppid has no session metadata file", () => {
-    const { sessionsDir, projectsDir, cleanup } = makeTempDirs("ppid-no-meta");
-    try {
-      // No metadata written for process.ppid → should return null
-      const result = resolveSessionLogByPpid({ sessionsDir, projectsDir });
-      expect(result).toBeNull();
-    } finally {
-      cleanup();
-    }
-  });
-
-  test("returns null when metadata has no matching jsonl", () => {
-    const { sessionsDir, projectsDir, cleanup } = makeTempDirs("ppid-no-log");
-    try {
-      const sessionId = "ppid-no-log-session";
-      const cwd = join(projectsDir, "missing-project");
-
-      writeSessionMeta(sessionsDir, process.ppid, { sessionId, cwd });
-      // Don't write the session log → should return null
-
-      const result = resolveSessionLogByPpid({ sessionsDir, projectsDir });
-      expect(result).toBeNull();
     } finally {
       cleanup();
     }

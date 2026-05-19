@@ -14,62 +14,11 @@ import { sanitizeTag } from "./project";
 import { resolveUserPath } from "./resolve-file";
 
 /**
- * Sanitize a cwd path for use as a directory name.
- * - Replace / with _
- * - Strip leading/trailing separators
- * - Strip non-word characters (except _ and -)
- * - Fallback to "_root" for empty results
- */
-export function sanitizeCwd(cwd: string): string {
-  return cwd
-    .replace(/\//g, "_")
-    .replace(/^_+|_+$/g, "")
-    .replace(/[^\w-]/g, "")
-    || "_root";
-}
-
-/**
- * Session scope parameters for storage functions.
- * When provided, storage paths are scoped to <dir>/<cwd_sanitized>/<sessionId>/.
- */
-export interface SessionScope {
-  cwd?: string;
-  sessionId?: string;
-}
-
-/**
- * Sanitize a sessionId for safe use as a filesystem path component.
- * - Replace / with _ (no directory separators)
- * - Replace .. with _ (no path traversal)
- * - Strip non-word characters
- * - Fallback to first 8 chars of uuid (safe hex) for empty results
- */
-function sanitizeSessionId(sessionId: string): string {
-  const sanitized = sessionId
-    .replace(/\//g, "_")
-    .replace(/\.\./g, "_")
-    .replace(/[^\w-]/g, "")
-    .trim();
-  return sanitized || sessionId.replace(/-/g, "").slice(0, 8);
-}
-
-/**
- * Build a scoped sub-path from cwd + sessionId.
- * Returns an empty string if either is missing (backward compat).
- * sessionId is sanitized to prevent path traversal attacks.
- */
-function scopePath(scope?: SessionScope): string {
-  if (!scope?.cwd || !scope?.sessionId) return "";
-  return join(sanitizeCwd(scope.cwd), sanitizeSessionId(scope.sessionId));
-}
-
-/**
  * Get the plan storage directory, creating it if needed.
  * Cross-platform: uses os.homedir() for Windows/macOS/Linux compatibility.
  * @param customPath Optional custom path. Supports ~ for home directory.
- * @param scope Optional session scope (cwd + sessionId) for path isolation.
  */
-export function getPlanDir(customPath?: string | null, scope?: SessionScope): string {
+export function getPlanDir(customPath?: string | null): string {
   let planDir: string;
 
   if (customPath?.trim()) {
@@ -78,14 +27,6 @@ export function getPlanDir(customPath?: string | null, scope?: SessionScope): st
     planDir = join(homedir(), ".plannotator", "plans");
   }
 
-
-// Apply session scope if both cwd and sessionId are provided
-  const scoped = scopePath(scope);
-  if (scoped) {
-    planDir = join(planDir, scoped);
-  }
-
-  planDir = resolve(planDir);
   mkdirSync(planDir, { recursive: true });
   return planDir;
 }
@@ -116,8 +57,8 @@ export function generateSlug(plan: string): string {
  * Save the plan markdown to disk.
  * Returns the full path to the saved file.
  */
-export function savePlan(slug: string, content: string, customPath?: string | null, scope?: SessionScope): string {
-  const planDir = getPlanDir(customPath, scope);
+export function savePlan(slug: string, content: string, customPath?: string | null): string {
+  const planDir = getPlanDir(customPath);
   const filePath = join(planDir, `${slug}.md`);
   writeFileSync(filePath, content, "utf-8");
   return filePath;
@@ -127,8 +68,8 @@ export function savePlan(slug: string, content: string, customPath?: string | nu
  * Save annotations to disk.
  * Returns the full path to the saved file.
  */
-export function saveAnnotations(slug: string, annotationsContent: string, customPath?: string | null, scope?: SessionScope): string {
-  const planDir = getPlanDir(customPath, scope);
+export function saveAnnotations(slug: string, annotationsContent: string, customPath?: string | null): string {
+  const planDir = getPlanDir(customPath);
   const filePath = join(planDir, `${slug}.annotations.md`);
   writeFileSync(filePath, annotationsContent, "utf-8");
   return filePath;
@@ -144,10 +85,9 @@ export function saveFinalSnapshot(
   status: "approved" | "denied",
   plan: string,
   annotations: string,
-  customPath?: string | null,
-  scope?: SessionScope
+  customPath?: string | null
 ): string {
-  const planDir = getPlanDir(customPath, scope);
+  const planDir = getPlanDir(customPath);
   const filePath = join(planDir, `${slug}-${status}.md`);
 
   // Combine plan with annotations appended
@@ -213,8 +153,8 @@ export function parseArchiveFilename(filename: string): ArchivedPlan | null {
  * List all archived plans (approved/denied decision snapshots).
  * Returns plans sorted by date descending.
  */
-export function listArchivedPlans(customPath?: string | null, scope?: SessionScope): ArchivedPlan[] {
-  const planDir = getPlanDir(customPath, scope);
+export function listArchivedPlans(customPath?: string | null): ArchivedPlan[] {
+  const planDir = getPlanDir(customPath);
   try {
     const entries = readdirSync(planDir);
     const plans: ArchivedPlan[] = [];
@@ -239,8 +179,8 @@ export function listArchivedPlans(customPath?: string | null, scope?: SessionSco
  * Read an archived plan file by filename.
  * Returns null if the file doesn't exist or on read error.
  */
-export function readArchivedPlan(filename: string, customPath?: string | null, scope?: SessionScope): string | null {
-  const planDir = getPlanDir(customPath, scope);
+export function readArchivedPlan(filename: string, customPath?: string | null): string | null {
+  const planDir = getPlanDir(customPath);
   const filePath = resolve(planDir, filename);
   // Guard against path traversal (resolve + trailing separator, matching reference-handlers.ts)
   if (!filePath.startsWith(planDir + sep)) return null;
@@ -258,11 +198,8 @@ export function readArchivedPlan(filename: string, customPath?: string | null, s
  * History is always stored in ~/.plannotator/history/{project}/{slug}/.
  * Not affected by the customPath setting (that only affects decision saves).
  */
-export function getHistoryDir(project: string, slug: string, scope?: SessionScope): string {
-  const scoped = scopePath(scope);
-  const historyDir = scoped
-    ? join(homedir(), ".plannotator", "history", scoped, project, slug)
-    : join(homedir(), ".plannotator", "history", project, slug);
+export function getHistoryDir(project: string, slug: string): string {
+  const historyDir = join(homedir(), ".plannotator", "history", project, slug);
   mkdirSync(historyDir, { recursive: true });
   return historyDir;
 }
@@ -296,10 +233,9 @@ function getNextVersionNumber(historyDir: string): number {
 export function saveToHistory(
   project: string,
   slug: string,
-  plan: string,
-  scope?: SessionScope
+  plan: string
 ): { version: number; path: string; isNew: boolean } {
-  const historyDir = getHistoryDir(project, slug, scope);
+  const historyDir = getHistoryDir(project, slug);
   const nextVersion = getNextVersionNumber(historyDir);
 
   // Deduplicate: check if latest version has identical content
@@ -328,10 +264,9 @@ export function saveToHistory(
 export function getPlanVersion(
   project: string,
   slug: string,
-  version: number,
-  scope?: SessionScope
+  version: number
 ): string | null {
-  const historyDir = getHistoryDir(project, slug, scope);
+  const historyDir = join(homedir(), ".plannotator", "history", project, slug);
   const fileName = `${String(version).padStart(3, "0")}.md`;
   const filePath = join(historyDir, fileName);
 
@@ -349,10 +284,9 @@ export function getPlanVersion(
 export function getPlanVersionPath(
   project: string,
   slug: string,
-  version: number,
-  scope?: SessionScope
+  version: number
 ): string | null {
-  const historyDir = getHistoryDir(project, slug, scope);
+  const historyDir = join(homedir(), ".plannotator", "history", project, slug);
   const fileName = `${String(version).padStart(3, "0")}.md`;
   const filePath = join(historyDir, fileName);
   return existsSync(filePath) ? filePath : null;
@@ -362,8 +296,8 @@ export function getPlanVersionPath(
  * Get the number of versions stored for a project/slug.
  * Returns 0 if the directory doesn't exist.
  */
-export function getVersionCount(project: string, slug: string, scope?: SessionScope): number {
-  const historyDir = getHistoryDir(project, slug, scope);
+export function getVersionCount(project: string, slug: string): number {
+  const historyDir = join(homedir(), ".plannotator", "history", project, slug);
   try {
     const entries = readdirSync(historyDir);
     return entries.filter((e) => /^\d+\.md$/.test(e)).length;
@@ -378,10 +312,9 @@ export function getVersionCount(project: string, slug: string, scope?: SessionSc
  */
 export function listVersions(
   project: string,
-  slug: string,
-  scope?: SessionScope
+  slug: string
 ): Array<{ version: number; timestamp: string }> {
-  const historyDir = getHistoryDir(project, slug, scope);
+  const historyDir = join(homedir(), ".plannotator", "history", project, slug);
   try {
     const entries = readdirSync(historyDir);
     const versions: Array<{ version: number; timestamp: string }> = [];
@@ -409,13 +342,9 @@ export function listVersions(
  * Returns slugs sorted by most recently modified first.
  */
 export function listProjectPlans(
-  project: string,
-  scope?: SessionScope
+  project: string
 ): Array<{ slug: string; versions: number; lastModified: string }> {
-  const scoped = scopePath(scope);
-  const projectDir = scoped
-    ? join(homedir(), ".plannotator", "history", scoped, project)
-    : join(homedir(), ".plannotator", "history", project);
+  const projectDir = join(homedir(), ".plannotator", "history", project);
   try {
     const entries = readdirSync(projectDir, { withFileTypes: true });
     const plans: Array<{ slug: string; versions: number; lastModified: string }> = [];

@@ -1,12 +1,10 @@
 /**
  * Plannotator Plugin for OpenCode
  *
- * Provides interactive browser-based plan review via a single tool:
- *   submit_plan(plan) — accepts either markdown text or a file path
- *
- * First submission: agent passes plan as text. On deny, the response includes
- * the path where the plan was saved, enabling the agent to use Edit for targeted
- * revisions and resubmit with the file path.
+ * POC: Edit-based submit_plan. The tool accepts line-range edits instead of
+ * full plan text or file paths. A backing file is managed by the plugin;
+ * the agent never touches it directly. On denial, the tool response includes
+ * the plan with line numbers so the agent can target surgical edits.
  *
  * Environment variables:
  *   PLANNOTATOR_REMOTE - Set to "1"/"true" for remote, "0"/"false" for local
@@ -18,7 +16,8 @@
  */
 
 import { type Plugin, tool } from "@opencode-ai/plugin";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { homedir } from "os";
 import path from "path";
 
 // OpenCode's @hono/node-server patches global.Response with a polyfill that
@@ -40,10 +39,7 @@ if (_proto?.constructor && _proto.constructor !== Response && _proto.constructor
 import {
   startPlannotatorServer,
   handleServerReady,
-  isClientMode,
-  getServerUrl,
 } from "@plannotator/server";
-import { openBrowser } from "@plannotator/server/browser";
 import {
   startReviewServer,
   handleReviewServerReady,
@@ -59,10 +55,20 @@ import {
   handleArchiveCommand,
   type CommandDeps,
 } from "./commands";
-import { planDenyFeedback } from "@plannotator/shared/feedback-templates";
+import {
+  getPlanDeniedPrompt,
+  getPlanApprovedPrompt,
+  getPlanApprovedWithNotesPrompt,
+  getPlanToolName,
+  getAnnotateMessageFeedbackPrompt,
+} from "@plannotator/shared/prompts";
+import { loadConfig } from "@plannotator/shared/config";
+import { readImprovementHook } from "@plannotator/shared/improvement-hooks";
+import { composeImproveContext } from "@plannotator/shared/pfm-reminder";
 import {
   stripConflictingPlanModeRules,
 } from "./plan-mode";
+import { sanitizeTag } from "@plannotator/shared/project";
 import {
   applyWorkflowConfig,
   isPlanningAgent,
@@ -70,6 +76,7 @@ import {
   shouldApplyToolDefinitionRewrites,
   shouldInjectFullPlanningPrompt,
   shouldInjectGenericPlanReminder,
+  shouldModifyPrompts,
   shouldRegisterSubmitPlan,
   shouldRejectSubmitPlanForAgent,
   type PlannotatorOpenCodeOptions,
@@ -111,35 +118,112 @@ function getReviewHtml(): string {
 }
 
 const DEFAULT_PLAN_TIMEOUT_SECONDS = 345_600; // 96 hours
+const MAX_PLAN_SIZE = 5 * 1024 * 1024; // 5MB
 
-// ── Auto-detection ────────────────────────────────────────────────────────
+// ── Edit-based plan management ────────────────────────────────────────────
 
-/**
- * Detect whether the submit_plan argument is a file path.
- * Must be an absolute path, end in .md, and exist on disk.
- * Anything that doesn't match is treated as plan text.
- */
-function isFilePath(value: string): boolean {
-  return path.isAbsolute(value) && value.endsWith(".md") && existsSync(value);
+interface PlanEdit {
+  start: number;
+  end?: number | null;
+  content: string;
 }
 
 /**
- * Resolve the plan content from the submit_plan argument.
- * Returns the markdown text and optionally the source file path.
+ * Backing file for the current plan. Stored outside the workspace in
+ * `~/.plannotator/active/{project}/_active-plan.md` so it never appears
+ * in git status or editor file trees. Managed entirely by the plugin;
+ * the agent never sees or touches this file directly.
  */
-function resolvePlanContent(plan: string): { content: string; filePath?: string } {
-  if (isFilePath(plan)) {
-    const content = readFileSync(plan, "utf-8");
-    if (!content.trim()) {
-      throw new Error(`Plan file at ${plan} is empty. Write your plan content first, then call submit_plan.`);
+export function getPlanBackingPath(project: string): string {
+  return path.join(homedir(), ".plannotator", "active", project, "_active-plan.md");
+}
+
+/**
+ * Apply line-range edits to a plan stored as an array of lines.
+ *
+ * Edit semantics:
+ *   - start/end are 1-indexed line numbers (inclusive)
+ *   - end omitted or null: replace from start through end of file
+ *     (on first call with start=1, this writes the entire plan)
+ *   - content="" with start/end: delete those lines
+ *   - edits are applied in order; line numbers refer to the document
+ *     state BEFORE any edits in this batch (offsets are adjusted internally)
+ */
+export function applyEdits(existingLines: string[], edits: PlanEdit[]): string[] {
+  // Sort by start ascending so offset adjustment works correctly
+  const sorted = [...edits].sort((a, b) => a.start - b.start);
+  const lines = [...existingLines];
+  let offset = 0;
+
+  for (const edit of sorted) {
+    const start = edit.start - 1 + offset; // convert to 0-indexed + adjust
+    const end = edit.end != null
+      ? edit.end + offset   // end is inclusive, so this becomes the exclusive upper bound
+      : lines.length;       // null/omitted = through end of file
+
+    const newLines = edit.content ? edit.content.split("\n") : [];
+    const removedCount = end - start;
+    lines.splice(start, removedCount, ...newLines);
+    offset += newLines.length - removedCount;
+  }
+
+  return lines;
+}
+
+/**
+ * Validate a batch of edits against the current file state.
+ * Returns an error string if invalid, or null if all edits are acceptable.
+ */
+export function validateEdits(existingLines: string[], edits: PlanEdit[]): string | null {
+  const lineCount = existingLines.length;
+
+  for (const edit of edits) {
+    if (!Number.isInteger(edit.start) || edit.start < 1) {
+      return `start must be a positive integer >= 1, got ${edit.start}`;
     }
-    return { content, filePath: plan };
+    if (edit.start > lineCount + 1) {
+      return `start (${edit.start}) exceeds file length + 1 (${lineCount + 1})`;
+    }
+    if (edit.end != null) {
+      if (!Number.isInteger(edit.end) || edit.end < edit.start) {
+        return `end (${edit.end}) must be >= start (${edit.start})`;
+      }
+      // On an empty file (lineCount === 0) every edit is a pure insert;
+      // end is semantically meaningless and applyEdits handles it via splice
+      // clamping. Rejecting here breaks first-call payloads where the agent
+      // or framework includes end (see #742).
+      if (edit.end > lineCount && lineCount > 0) {
+        return `end (${edit.end}) exceeds file length (${lineCount})`;
+      }
+    }
   }
-  // Catch typos: looks like a file path but doesn't exist
-  if (path.isAbsolute(plan) && plan.endsWith(".md")) {
-    throw new Error(`File not found: ${plan}. Check the path and try again.`);
+
+  // Check for overlapping ranges (sorted by start ascending)
+  const sorted = [...edits].sort((a, b) => a.start - b.start);
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const curr = sorted[i];
+    // Appending edits (start > lineCount) have no range that can overlap
+    if (prev.start > lineCount) continue;
+    const prevEnd = prev.end ?? lineCount;
+    if (curr.start <= prevEnd) {
+      return `edits overlap: [${prev.start},${prevEnd}] and [${curr.start},${curr.end ?? "end"}]`;
+    }
   }
-  return { content: plan };
+
+  return null;
+}
+
+/**
+ * Format the plan content with line numbers for the agent's reference.
+ * Returned in the tool response so the agent can track line positions.
+ */
+export function formatWithLineNumbers(content: string): string {
+  const lines = content.split("\n");
+  const width = String(lines.length).length;
+  return lines
+    .map((line, i) => `${String(i + 1).padStart(width)}| ${line}`)
+    .join("\n");
 }
 
 // ── Planning prompt ───────────────────────────────────────────────────────
@@ -151,7 +235,7 @@ function resolvePlanContent(plan: string): { content: string; filePath?: string 
  * - Explain the WHY — the model is smart, give it context
  * - Keep it lean — every line should pull its weight
  * - Don't overfit — let the agent and user dictate the workflow
- * - One tool, two modes — text for first submission, file path for revisions
+ * - Edit-based: all submissions use line-range edits against a backing file
  */
 function getPlanningPrompt(): string {
   return `## Plannotator — Plan Review
@@ -160,10 +244,26 @@ You have a plan submission tool called \`submit_plan\`. It opens an interactive 
 
 **How to use it:**
 
-- Pass your plan as markdown text — \`submit_plan(plan: "# My Plan\\n...")\`.
-- Or pass an absolute file path to a .md file — \`submit_plan(plan: "/path/to/plan.md")\`.
+\`submit_plan\` accepts an array of line-range edits. On first submission, pass the full plan as a single edit starting at line 1:
 
-The tool auto-detects whether you passed text or a file path. Both open the same review UI.
+\`\`\`json
+{ "edits": [{ "start": 1, "content": "# My Plan\\n\\n## Goals\\n..." }] }
+\`\`\`
+
+If the user denies and requests changes, apply surgical edits using line ranges. The tool response includes your plan with line numbers so you can target specific ranges:
+
+\`\`\`json
+{ "edits": [
+  { "start": 12, "end": 14, "content": "revised section content" },
+  { "start": 30, "end": 30, "content": "" }
+] }
+\`\`\`
+
+Edit semantics:
+- \`start\` and \`end\` are 1-indexed, inclusive line numbers
+- Omit \`end\` to replace from \`start\` through end of file (use this for the initial full write)
+- Empty \`content\` with \`start\`/\`end\` deletes those lines
+- Multiple edits in one call are applied in order; line numbers refer to the state before edits
 
 ### Before you write a plan
 
@@ -198,8 +298,8 @@ export const PlannotatorPlugin: Plugin = async (ctx, rawOptions?: PlannotatorOpe
   const workflowOptions = normalizeWorkflowOptions(rawOptions);
 
   // Preload HTML in background — populates the sync cache before first use
-  Bun.file(resolveBundledHtmlPath("plannotator.html")).text().then(h => { _planHtml = h; }).catch(() => {});
-  Bun.file(resolveBundledHtmlPath("review-editor.html")).text().then(h => { _reviewHtml = h; }).catch(() => {});
+  Bun.file(resolveBundledHtmlPath("plannotator.html")).text().then(h => { _planHtml = h; });
+  Bun.file(resolveBundledHtmlPath("review-editor.html")).text().then(h => { _reviewHtml = h; });
 
   let cachedAgents: any[] | null = null;
 
@@ -255,7 +355,7 @@ export const PlannotatorPlugin: Plugin = async (ctx, rawOptions?: PlannotatorOpe
     // that allows markdown file writing. OpenCode's original blocks ALL file edits,
     // but we need the agent to write plans, specs, docs, etc.
     "experimental.chat.messages.transform": async (input, output) => {
-      if (workflowOptions.workflow === "manual") return;
+      if (!shouldModifyPrompts(workflowOptions)) return;
 
       const lastUserAgent = getLastUserAgentFromMessages(output.messages);
       if (
@@ -309,7 +409,7 @@ tools (except writing markdown files), or otherwise make changes to the system.
 
     // Inject planning instructions into system prompt
     "experimental.chat.system.transform": async (input, output) => {
-      if (workflowOptions.workflow === "manual") return;
+      if (!shouldModifyPrompts(workflowOptions)) return;
 
       const systemText = output.system.join("\n");
       if (systemText.toLowerCase().includes("title generator") || systemText.toLowerCase().includes("generate a title")) {
@@ -346,8 +446,21 @@ tools (except writing markdown files), or otherwise make changes to the system.
       }
 
       if (shouldInjectFullPlanningPrompt(lastUserAgent, workflowOptions)) {
-        output.system = stripConflictingPlanModeRules(output.system);
+        const stripped = stripConflictingPlanModeRules(output.system);
+        output.system.length = 0;
+        output.system.push(...stripped);
         output.system.push(getPlanningPrompt());
+
+        const hook = readImprovementHook("enterplanmode-improve");
+        const pfmEnabled = loadConfig().pfmReminder === true;
+        const improveContext = composeImproveContext({
+          pfmEnabled,
+          improvementHookContent: hook?.content ?? null,
+        });
+        if (improveContext) {
+          output.system.push(improveContext);
+        }
+
         return;
       }
 
@@ -355,18 +468,33 @@ tools (except writing markdown files), or otherwise make changes to the system.
 
       output.system.push(`## Plan Submission
 
-When you have completed your plan, call the \`submit_plan\` tool to submit it for user review. Pass your plan as markdown text, or pass an absolute file path to a .md file.
+When you have completed your plan, call the \`submit_plan\` tool to submit it for user review. Pass your full plan as a single edit: \`{ "edits": [{ "start": 1, "content": "..." }] }\`.
 
-The user will review your plan in a visual UI where they can annotate, approve, or request changes. If rejected, revise based on their feedback and call submit_plan again.
+The user will review your plan in a visual UI where they can annotate, approve, or request changes. If rejected, the response includes your plan with line numbers; use targeted edits to revise specific sections.
 
 Do NOT proceed with implementation until your plan is approved.`);
     },
 
-    // Intercept plannotator-last before the agent sees the command
+    // Intercept plannotator commands before the agent sees them.
+    // Clearing output.parts in place suppresses the .md body + appended
+    // args so the agent never receives the command — without this, OpenCode
+    // calls resolvePromptParts() on "<body> <arguments>", which auto-attaches
+    // any file path it finds as a FilePart. On a large file that blows the
+    // context before the annotation UI even opens (#713).
+    //
+    // Must mutate in place (length = 0), not reassign (= []). The caller
+    // holds a reference to the parts array directly and ignores any new
+    // array assigned to output.parts.
     "command.execute.before": async (input, output) => {
-      if (input.command !== "plannotator-last") return;
+      const cmd = input.command;
+      if (
+        cmd !== "plannotator-last" &&
+        cmd !== "plannotator-annotate" &&
+        cmd !== "plannotator-review" &&
+        cmd !== "plannotator-archive"
+      ) return;
 
-      output.parts = [];
+      output.parts.length = 0;
 
       const deps: CommandDeps = {
         client: ctx.client,
@@ -377,58 +505,35 @@ Do NOT proceed with implementation until your plan is approved.`);
         getPasteApiUrl,
         directory: ctx.directory,
       };
+      // input.arguments is the raw tail string from OpenCode's command dispatcher —
+      // needed so --gate / --json reach the handlers' parseAnnotateArgs (#570).
+      const event = {
+        properties: { sessionID: input.sessionID, arguments: input.arguments },
+      };
 
-      const feedback = await handleAnnotateLastCommand(
-        // input.arguments is the raw tail string from OpenCode's command dispatcher —
-        // needed so --gate / --json reach handleAnnotateLastCommand's parseAnnotateArgs (#570).
-        { properties: { sessionID: input.sessionID, arguments: input.arguments } },
-        deps
-      );
-
-      if (feedback) {
-        try {
-          await ctx.client.session.prompt({
-            path: { id: input.sessionID },
-            body: {
-              parts: [{
-                type: "text",
-                text: `# Message Annotations\n\n${feedback}\n\nPlease address the annotation feedback above.`,
-              }],
-            },
-          });
-        } catch {
-          // Session may not be available
+      if (cmd === "plannotator-last") {
+        const feedback = await handleAnnotateLastCommand(event, deps);
+        if (feedback) {
+          try {
+            await ctx.client.session.prompt({
+              path: { id: input.sessionID },
+              body: {
+                parts: [{
+                  type: "text",
+                  text: getAnnotateMessageFeedbackPrompt("opencode", undefined, { feedback }),
+                }],
+              },
+            });
+          } catch {
+            // Session may not be available
+          }
         }
+        return;
       }
-    },
 
-    // Listen for slash commands (review + annotate)
-    event: async ({ event }) => {
-      const isCommandEvent =
-        event.type === "command.executed" ||
-        event.type === "tui.command.execute";
-
-      if (!isCommandEvent) return;
-
-      // @ts-ignore - Event structure varies
-      const commandName = event.properties?.name || event.command || event.payload?.name;
-
-      const deps: CommandDeps = {
-        client: ctx.client,
-        htmlContent: getPlanHtml(),
-        reviewHtmlContent: getReviewHtml(),
-        getSharingEnabled,
-        getShareBaseUrl,
-        getPasteApiUrl,
-        directory: ctx.directory,
-      };
-
-      if (commandName === "plannotator-review")
-        return handleReviewCommand(event, deps);
-      if (commandName === "plannotator-annotate")
-        return handleAnnotateCommand(event, deps);
-      if (commandName === "plannotator-archive")
-        return handleArchiveCommand(event, deps);
+      if (cmd === "plannotator-annotate") return handleAnnotateCommand(event, deps);
+      if (cmd === "plannotator-review") return handleReviewCommand(event, deps);
+      if (cmd === "plannotator-archive") return handleArchiveCommand(event, deps);
     },
   };
 
@@ -436,230 +541,112 @@ Do NOT proceed with implementation until your plan is approved.`);
     plugin.tool = {
       submit_plan: tool({
         description:
-          "Planning tool used to submit a plan to the user for review. Before calling this tool you must conduct interactive and exploratory analysis in order to submit a quality plan. Ask questions. Explore the codebase for context if needed. Only call submit_plan once you have enough details to create a quality plan. Work with the user to get those details. Pass either markdown text or an absolute path to a .md file. Use use_latest_message: true to submit the latest assistant message from the current session as the plan.",
+          "Submit a plan for user review via line-range edits. First call: pass a single edit with start=1 and your full plan as content (omit end). Subsequent calls after denial: pass targeted edits using the line numbers from the previous response. The tool manages a backing file; you never touch the file directly.",
         args: {
-          plan: tool.schema
-            .string()
-            .describe("The plan — either markdown text or an absolute path to a .md file. Ignored when use_latest_message is true."),
-          use_latest_message: tool.schema
-            .boolean()
-            .describe("When true, extract the latest assistant message from the current OpenCode session and use it as the plan. The plan argument is ignored.")
-            .default(false),
-          name: tool.schema
-            .string()
-            .describe("Optional user-friendly name for the plan. Used in URLs and session listing for easy identification.")
-            .optional(),
+          edits: tool.schema
+            .array(
+              tool.schema.object({
+                start: tool.schema.number().describe("1-indexed start line (inclusive)"),
+                end: tool.schema.number().optional().describe("1-indexed end line (inclusive). Omit to replace from start through end of file."),
+                content: tool.schema.string().describe("Replacement content. Empty string deletes the line range."),
+              }),
+            )
+            .describe("Array of line-range edits to apply to the plan."),
         },
 
         async execute(args, context) {
-const invokingAgent = (context as { agent?: string }).agent;
+          const invokingAgent = (context as { agent?: string }).agent;
           if (shouldRejectSubmitPlanForAgent(invokingAgent, workflowOptions)) {
             return `Plannotator is configured for plan-agent mode. submit_plan can only be called by: ${workflowOptions.planningAgents.join(", ")}.
 
 Use /plannotator-last or /plannotator-annotate for manual review, or set workflow to all-agents to allow broader submit_plan access.`;
           }
 
-          // Auto-detect: file path or plan text
-// REQ-NEW: use_latest_message — extract latest assistant message as plan
-          let planContent: string;
-          let sourceFilePath: string | undefined;
-          if (args.use_latest_message) {
-            let messages: any[] | undefined;
-            try {
-              const response = await ctx.client.session.messages({
-                path: { id: context.sessionID },
-              });
-              messages = response.data;
-            } catch {
-              return "Error: Could not fetch session messages. Ensure OpenCode session is active.";
-            }
-
-            // Walk backward — find last assistant message with text parts
-            let lastAssistantText: string | null = null;
-            if (messages) {
-              for (let i = messages.length - 1; i >= 0; i--) {
-                const msg = messages[i];
-                if (msg.info?.role === "assistant") {
-                  const textParts = (msg.parts ?? [])
-                    .filter((p: any) => p.type === "text" && p.text?.trim())
-                    .map((p: any) => p.text as string);
-                  if (textParts.length > 0) {
-                    lastAssistantText = textParts.join("\n");
-                    break;
-                  }
-                }
-              }
-            }
-
-            if (!lastAssistantText) {
-              return "Error: The latest assistant message has no text content to submit as a plan. Write your plan and pass it as the plan argument, or try again once the assistant has responded with text.";
-            }
-            planContent = lastAssistantText;
-          } else {
-            // Auto-detect: file path or plan text
-            try {
-              const resolved = resolvePlanContent(args.plan ?? "");
-              planContent = resolved.content;
-              sourceFilePath = resolved.filePath;
-            } catch (err) {
-              return `Error: ${err instanceof Error ? err.message : String(err)}`;
-            }
+          if (!args.edits || args.edits.length === 0) {
+            return "Error: No edits provided. Pass at least one edit with start and content.";
           }
 
+          // Read existing backing file (empty on first call)
+          const project = sanitizeTag(path.basename(ctx.directory)) || "_unknown";
+          const backingPath = getPlanBackingPath(project);
+          const backingDir = path.dirname(backingPath);
+          mkdirSync(backingDir, { recursive: true });
+
+          let existingContent = "";
+          if (existsSync(backingPath)) {
+            existingContent = readFileSync(backingPath, "utf-8");
+          }
+
+          // Validate and apply edits
+          const existingLines = existingContent ? existingContent.split("\n") : [];
+
+          const validationError = validateEdits(existingLines, args.edits);
+          if (validationError) {
+            return `Error: ${validationError}`;
+          }
+
+          let resultLines: string[];
+          try {
+            resultLines = applyEdits(existingLines, args.edits);
+          } catch (err) {
+            return `Error applying edits: ${err instanceof Error ? err.message : String(err)}`;
+          }
+
+          const planContent = resultLines.join("\n");
+          if (planContent.length > MAX_PLAN_SIZE) {
+            return `Error: Plan content exceeds the maximum size of ${MAX_PLAN_SIZE / (1024 * 1024)}MB.`;
+          }
           if (!planContent.trim()) {
-            return "Error: Plan content is empty. Write your plan first, then call submit_plan.";
+            return "Error: Plan content is empty after applying edits.";
           }
+
+          // Write backing file
+          writeFileSync(backingPath, planContent, "utf-8");
 
           const sharingEnabled = await getSharingEnabled();
+          const server = await startPlannotatorServer({
+            plan: planContent,
+            origin: "opencode",
+            sharingEnabled,
+            shareBaseUrl: getShareBaseUrl(),
+            pasteApiUrl: getPasteApiUrl(),
+            htmlContent: getPlanHtml(),
+            opencodeClient: ctx.client,
+            onReady: async (url, isRemote, port) => {
+              handleServerReady(url, isRemote, port);
+              if (isRemote) {
+                ctx.client.app.log({ level: "info", message: `[Plannotator] Open in browser: ${url}` });
+              }
+            },
+          });
+
           const timeoutSeconds = getPlanTimeoutSeconds();
           const timeoutMs = timeoutSeconds === null ? null : timeoutSeconds * 1000;
 
-          let result: { approved: boolean; feedback?: string; savedPath?: string; agentSwitch?: string; permissionMode?: string };
+          const result = timeoutMs === null
+            ? await server.waitForDecision()
+            : await new Promise<Awaited<ReturnType<typeof server.waitForDecision>>>((resolve) => {
+                const timeoutId = setTimeout(
+                  () =>
+                    resolve({
+                      approved: false,
+                      feedback: `[Plannotator] No response within ${timeoutSeconds} seconds. Port released automatically. Please call submit_plan again.`,
+                    }),
+                  timeoutMs
+                );
 
-          if (isClientMode()) {
-            // ── Client mode: connect to running CLI server via HTTP ──────────
-            const serverBaseUrl = getServerUrl(0); // 0 = ignored when SERVER_URL is set
-            let sessionId: string;
-            let sessionUrl: string;
-
-            try {
-              // Register a new plan session with the running server
-              const createRes = await fetch(`${serverBaseUrl}/api/sessions`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  plan: planContent,
-                  mode: "plan",
-                  cwd: ctx.directory,
-                  name: args.name,
-                }),
+                server.waitForDecision().then((r) => {
+                  clearTimeout(timeoutId);
+                  resolve(r);
+                });
               });
-
-              if (!createRes.ok) {
-                const err = await createRes.json().catch(() => ({ error: createRes.statusText }));
-                return `Error: Could not connect to plannotator server (${createRes.status}): ${err.error ?? createRes.statusText}. Is the server running?`;
-              }
-
-              const created = await createRes.json();
-              sessionId = created.sessionId;
-              sessionUrl = created.url;
-            } catch (err) {
-              return `Error: Could not reach plannotator server at ${serverBaseUrl}. Make sure the server is running (e.g. \`plannotator serve\` or a long-running CLI command).`;
-            }
-
-            // Open the review UI in the browser
-            await openBrowser(sessionUrl, { isRemote: true });
-
-            // Poll for decision (with optional timeout)
-            const pollUntil = timeoutMs ? Date.now() + timeoutMs : 0;
-            let settled = false;
-
-            result = await new Promise<typeof result>((resolve) => {
-              // Try SSE first (real-time, no polling)
-              let eventSource: EventSource | null = null;
-              let eventSourceClosed = false;
-
-              const sseUrl = `${sessionUrl}/api/decision/stream`;
-              try {
-                eventSource = new EventSource(sseUrl);
-              } catch {
-                eventSource = null;
-              }
-
-              const cleanup = () => {
-                settled = true;
-                eventSource?.close();
-              };
-
-              if (eventSource) {
-                eventSource.addEventListener("connected", () => {
-                  // SSE connected, waiting for user decision...
-                });
-
-                eventSource.addEventListener("decision", (e: MessageEvent) => {
-                  cleanup();
-                  resolve(JSON.parse(e.data));
-                });
-
-                eventSource.addEventListener("error", () => {
-                  if (!eventSourceClosed) {
-                    eventSourceClosed = true;
-                    eventSource?.close();
-                    // Fall back to polling
-                    startPolling();
-                  }
-                });
-              }
-
-              const startPolling = () => {
-                const poll = async () => {
-                  if (settled) return;
-                  if (pollUntil && Date.now() > pollUntil) {
-                    cleanup();
-                    resolve({ approved: false, feedback: `[Plannotator] No response within ${timeoutSeconds} seconds. Please call submit_plan again.` });
-                    return;
-                  }
-                  try {
-                    const res = await fetch(`${sessionUrl}/api/decision`);
-                    if (res.ok) {
-                      const data = await res.json();
-                      if (!data.pending) {
-                        cleanup();
-                        resolve({ approved: data.approved, feedback: data.feedback, savedPath: data.savedPath, agentSwitch: data.agentSwitch, permissionMode: data.permissionMode });
-                        return;
-                      }
-                    }
-                  } catch { /* ignore poll errors */ }
-                  if (!settled) setTimeout(poll, 1000);
-                };
-                poll();
-              };
-
-              // If SSE failed to connect, start polling immediately
-              if (!eventSource) startPolling();
-            });
-          } else {
-            // ── Spawn mode: start own server (original behavior) ─────────────
-            const server = await startPlannotatorServer({
-              plan: planContent,
-              origin: "opencode",
-              sharingEnabled,
-              shareBaseUrl: getShareBaseUrl(),
-              htmlContent: getPlanHtml(),
-              opencodeClient: ctx.client,
-              sessionId: context.sessionID,
-              cwd: ctx.directory,
-              name: args.name,
-              onReady: async (url, isRemote, port) => {
-                handleServerReady(url, isRemote, port);
-              },
-            });
-
-            result = timeoutMs === null
-              ? await server.waitForDecision(context.sessionID)
-              : await new Promise<typeof result>((resolve) => {
-                  const timeoutId = setTimeout(
-                    () =>
-                      resolve({
-                        approved: false,
-                        feedback: `[Plannotator] No response within ${timeoutSeconds} seconds. Port released automatically. Please call submit_plan again.`,
-                      }),
-                    timeoutMs
-                  );
-
-                  server.waitForDecision(context.sessionID).then((r) => {
-                    clearTimeout(timeoutId);
-                    resolve(r);
-                  }).catch((err: unknown) => {
-                    clearTimeout(timeoutId);
-                    resolve({ approved: false, feedback: `Decision failed: ${err instanceof Error ? err.message : String(err)}` });
-                  });
-                });
-            await Bun.sleep(1500);
-            server.stop();
-          }
+          await Bun.sleep(1500);
+          server.stop();
 
           if (result.approved) {
+            // Clean up backing file after approval
+            try { unlinkSync(backingPath); } catch { /* already gone */ }
+
             const shouldSwitchAgent = result.agentSwitch && result.agentSwitch !== 'disabled';
             const targetAgent = result.agentSwitch || 'build';
 
@@ -679,103 +666,30 @@ Use /plannotator-last or /plannotator-annotate for manual review, or set workflo
             }
 
             if (result.feedback) {
-              return `Plan approved with notes!
-${result.savedPath ? `Saved to: ${result.savedPath}` : ""}
-
-## Implementation Notes
-
-The user approved your plan but added the following notes to consider during implementation:
-
-${result.feedback}
-
-Proceed with implementation, incorporating these notes where applicable.`;
+              return getPlanApprovedWithNotesPrompt("opencode", undefined, {
+                planFilePath: backingPath,
+                doneMsg: result.savedPath ? `Saved to: ${result.savedPath}` : "",
+                feedback: result.feedback,
+                proceedSuffix: shouldSwitchAgent
+                  ? "\n\nProceed with implementation, incorporating these notes where applicable."
+                  : "",
+              });
             }
 
-            return `Plan approved!${result.savedPath ? ` Saved to: ${result.savedPath}` : ""}`;
+            return getPlanApprovedPrompt("opencode", undefined, {
+              planFilePath: backingPath,
+              doneMsg: result.savedPath ? ` Saved to: ${result.savedPath}` : "",
+            });
           } else {
-            return planDenyFeedback(result.feedback || "", "submit_plan", {
-              planFilePath: sourceFilePath,
-            }) + "\n\nAfter making your revisions, call `submit_plan` again to resubmit for review.";
+            const lineNumberedPlan = formatWithLineNumbers(planContent);
+            const totalLines = planContent.split("\n").length;
+
+            return getPlanDeniedPrompt("opencode", undefined, {
+              toolName: getPlanToolName("opencode"),
+              planFileRule: "",
+              feedback: result.feedback || "Plan changes requested",
+            }) + `\n\n## Current Plan (${totalLines} lines)\n\nThe plan below shows the current state with line numbers. Use these exact line numbers in your next \`submit_plan\` call:\n\n\`\`\`\n${lineNumberedPlan}\n\`\`\`\n\nCall \`submit_plan\` with targeted edits to address the feedback above.`;
           }
-        },
-      }),
-      annotate_last: tool({
-        description:
-          "Annotate the last assistant message from the current OpenCode session with feedback.",
-        args: {},
-
-        async execute(_args, context) {
-          // Fetch messages from the current session
-          let messages: any[] | undefined;
-          try {
-            const response = await ctx.client.session.messages({
-              path: { id: context.sessionID },
-            });
-            messages = response.data;
-          } catch {
-            return "Error: Could not fetch session messages.";
-          }
-
-          // Walk backward, find last assistant message with text
-          let lastText: string | null = null;
-          if (messages) {
-            for (let i = messages.length - 1; i >= 0; i--) {
-              const msg = messages[i];
-              if (msg.info.role === "assistant") {
-                const textParts = msg.parts
-                  .filter((p: any) => p.type === "text" && p.text?.trim())
-                  .map((p: any) => p.text);
-                if (textParts.length > 0) {
-                  lastText = textParts.join("\n");
-                  break;
-                }
-              }
-            }
-          }
-
-          if (!lastText) {
-            return "Error: No assistant message found in session.";
-          }
-
-          const sharingEnabled = await getSharingEnabled();
-          const server = await startAnnotateServer({
-            markdown: lastText,
-            filePath: "last-message",
-            origin: "opencode",
-            mode: "annotate-last",
-            sharingEnabled,
-            shareBaseUrl: getShareBaseUrl(),
-            htmlContent: getPlanHtml(),
-            sessionId: context.sessionID,
-            cwd: ctx.directory,
-            onReady: handleAnnotateServerReady,
-          });
-
-          const result = await server.waitForDecision();
-          await Bun.sleep(1500);
-          server.stop();
-
-          if (result.exit || !result.feedback) {
-            return "Annotation cancelled.";
-          }
-
-          // Inject feedback as a user prompt so the agent processes it
-          try {
-            await ctx.client.session.prompt({
-              path: { id: context.sessionID },
-              body: {
-                parts: [{
-                  type: "text",
-                  text: `# Message Annotations\n\n${result.feedback}\n\nPlease address the annotation feedback above.`,
-                }],
-              },
-            });
-          } catch {
-            // Session may not be available — return feedback as text
-            return `# Message Annotations\n\n${result.feedback}`;
-          }
-
-          return `# Annotations submitted.\n\n${result.feedback}`;
         },
       }),
     };
