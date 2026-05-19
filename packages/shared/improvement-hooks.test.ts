@@ -48,10 +48,13 @@ async function runScenario(setup: {
     writeFileSync(legacyPath, setup.legacyPathContent);
   }
 
+  // Use the real bun binary directly (not the shell wrapper which uses ~ that breaks under HOME override)
+  const bunBinary = process.execPath;
+
   // Run in a subprocess with HOME overridden so homedir() returns TEST_HOME
   const proc = Bun.spawn(
     [
-      "bun",
+      bunBinary,
       "-e",
       `
       import { readImprovementHook } from "./packages/shared/improvement-hooks";

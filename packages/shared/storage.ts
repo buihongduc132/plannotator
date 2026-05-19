@@ -18,13 +18,18 @@ import { resolveUserPath } from "./resolve-file";
  * Cross-platform: uses os.homedir() for Windows/macOS/Linux compatibility.
  * @param customPath Optional custom path. Supports ~ for home directory.
  */
-export function getPlanDir(customPath?: string | null): string {
+export function getPlanDir(customPath?: string | null, scope?: SessionScope): string {
   let planDir: string;
 
   if (customPath?.trim()) {
     planDir = resolveUserPath(customPath);
   } else {
     planDir = join(homedir(), ".plannotator", "plans");
+  }
+
+  // Scope to cwd + sessionId subdirectory when both are provided
+  if (scope?.cwd && scope?.sessionId) {
+    planDir = join(planDir, sanitizeCwd(scope.cwd), scope.sessionId);
   }
 
   mkdirSync(planDir, { recursive: true });
@@ -57,8 +62,8 @@ export function generateSlug(plan: string): string {
  * Save the plan markdown to disk.
  * Returns the full path to the saved file.
  */
-export function savePlan(slug: string, content: string, customPath?: string | null): string {
-  const planDir = getPlanDir(customPath);
+export function savePlan(slug: string, content: string, customPath?: string | null, scope?: SessionScope): string {
+  const planDir = getPlanDir(customPath, scope);
   const filePath = join(planDir, `${slug}.md`);
   writeFileSync(filePath, content, "utf-8");
   return filePath;
@@ -68,8 +73,8 @@ export function savePlan(slug: string, content: string, customPath?: string | nu
  * Save annotations to disk.
  * Returns the full path to the saved file.
  */
-export function saveAnnotations(slug: string, annotationsContent: string, customPath?: string | null): string {
-  const planDir = getPlanDir(customPath);
+export function saveAnnotations(slug: string, annotationsContent: string, customPath?: string | null, scope?: SessionScope): string {
+  const planDir = getPlanDir(customPath, scope);
   const filePath = join(planDir, `${slug}.annotations.md`);
   writeFileSync(filePath, annotationsContent, "utf-8");
   return filePath;
@@ -85,9 +90,10 @@ export function saveFinalSnapshot(
   status: "approved" | "denied",
   plan: string,
   annotations: string,
-  customPath?: string | null
+  customPath?: string | null,
+  scope?: SessionScope
 ): string {
-  const planDir = getPlanDir(customPath);
+  const planDir = getPlanDir(customPath, scope);
   const filePath = join(planDir, `${slug}-${status}.md`);
 
   // Combine plan with annotations appended
@@ -347,7 +353,13 @@ export interface SessionScope {
 }
 
 export function sanitizeCwd(cwd: string): string {
-  return cwd.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^_+|_+$/g, "");
+  // Replace path separators (/) with underscores (preserving count),
+  // then remove all other non-word characters, then strip leading/trailing underscores
+  const result = cwd
+    .replace(/\//g, "_")
+    .replace(/[^a-zA-Z0-9_]/g, "")
+    .replace(/^_+|_+$/g, "");
+  return result || "_root";
 }
 
 export function listProjectPlans(
