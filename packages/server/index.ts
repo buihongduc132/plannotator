@@ -153,6 +153,19 @@ function unregisterSession(sessionId: string): void {
   sessionRegistry.delete(sessionId);
 }
 
+// Aliases for test compatibility (session context API)
+export function getSessionContext(sessionId: string): RegisteredSession | undefined {
+  return sessionRegistry.get(sessionId);
+}
+
+export function registerSessionContext(s: RegisteredSession): void {
+  registerSession(s);
+}
+
+export function unregisterSessionContext(sessionId: string): void {
+  unregisterSession(sessionId);
+}
+
 // --- Server Implementation ---
 
 const MAX_RETRIES = 5;
@@ -704,7 +717,7 @@ export async function startPlannotatorServer(
               project: s.project,
               slug: s.slug,
               cwd: s.cwd,
-              url: `http://localhost:${port}/s/${s.sessionId}`,
+              url: `${serverUrl}/s/${s.sessionId}`,
             }));
             return Response.json({
               sessions,
@@ -748,7 +761,7 @@ export async function startPlannotatorServer(
 
               return Response.json({
                 sessionId: newSessionId,
-                url: `http://localhost:${port}/s/${newSessionId}`,
+                url: `${serverUrl}/s/${newSessionId}`,
                 plan: body.plan.slice(0, 200),
                 slug: newSlug,
                 mode: regSession.mode,

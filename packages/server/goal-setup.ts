@@ -15,7 +15,7 @@ import {
   type GoalSetupQuestionAnswer,
   type GoalSetupResult,
 } from "@plannotator/shared/goal-setup";
-import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
+import { isRemoteSession, getServerHostname, getServerPort, getServerUrl } from "./remote";
 import { getRepoInfo } from "./repo";
 import {
   handleFavicon,
@@ -235,7 +235,7 @@ export async function startGoalSetupServer(
   }
 
   const port = server.port!;
-  const serverUrl = `http://localhost:${port}`;
+  const serverUrl = getServerUrl(port);
   onReady?.(serverUrl, isRemote, port);
 
   return {
