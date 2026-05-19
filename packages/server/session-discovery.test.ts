@@ -46,6 +46,30 @@ async function startServer(
   return { ...result, url, cleanup };
 }
 
+// ---------------------------------------------------------------------------
+// Env isolation — prevent inherited PLANNOTATOR_REMOTE/PORT from forcing
+// fixed-port 19432 (causes EADDRINUSE when multiple servers start)
+// ---------------------------------------------------------------------------
+
+let savedPort: string | undefined;
+let savedRemote: string | undefined;
+let savedServerUrl: string | undefined;
+
+beforeAll(() => {
+  savedPort = process.env.PLANNOTATOR_PORT;
+  savedRemote = process.env.PLANNOTATOR_REMOTE;
+  savedServerUrl = process.env.PLANNOTATOR_SERVER_URL;
+  delete process.env.PLANNOTATOR_PORT;
+  delete process.env.PLANNOTATOR_REMOTE;
+  delete process.env.PLANNOTATOR_SERVER_URL;
+});
+
+afterAll(() => {
+  if (savedPort !== undefined) process.env.PLANNOTATOR_PORT = savedPort;
+  if (savedRemote !== undefined) process.env.PLANNOTATOR_REMOTE = savedRemote;
+  if (savedServerUrl !== undefined) process.env.PLANNOTATOR_SERVER_URL = savedServerUrl;
+});
+
 // Track servers for cleanup
 const servers: Array<{ cleanup: () => Promise<void> }> = [];
 

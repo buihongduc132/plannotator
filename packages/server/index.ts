@@ -36,6 +36,7 @@ import {
   getVersionCount,
   listVersions,
   listArchivedPlans,
+  listProjectPlans,
   readArchivedPlan,
   type ArchivedPlan,
 } from "./storage";
@@ -114,6 +115,42 @@ export interface ServerResult {
   waitForDone?: () => Promise<void>;
   /** Stop the server */
   stop: () => void;
+}
+
+// --- Multi-Session Registry ---
+//
+// Lightweight in-memory registry for concurrent sessions within a single Bun server.
+// Modeled after apps/pi-extension/server/session-registry.ts but using Bun primitives.
+
+interface RegisteredSession {
+  sessionId: string;
+  mode: string;
+  origin: string;
+  project: string;
+  slug: string;
+  cwd: string;
+  plan: string;
+  port: number;
+  registeredAt: number;
+}
+
+const MAX_SESSIONS_LIMIT = (() => {
+  const env = process.env.PLANNOTATOR_MAX_SESSIONS;
+  const parsed = env ? parseInt(env, 10) : NaN;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 50;
+})();
+
+const sessionRegistry = new Map<string, RegisteredSession>();
+
+function registerSession(s: RegisteredSession): void {
+  if (sessionRegistry.size >= MAX_SESSIONS_LIMIT) {
+    throw new Error(`Concurrent session limit reached (${MAX_SESSIONS_LIMIT}). Set PLANNOTATOR_MAX_SESSIONS to increase.`);
+  }
+  sessionRegistry.set(s.sessionId, s);
+}
+
+function unregisterSession(sessionId: string): void {
+  sessionRegistry.delete(sessionId);
 }
 
 // --- Server Implementation ---
@@ -301,7 +338,7 @@ export async function startPlannotatorServer(
                 serverConfig: getServerConfig(gitUser),
               });
             }
-            return Response.json({ plan, origin, permissionMode, sharingEnabled, shareBaseUrl, pasteApiUrl, repoInfo, previousPlan, versionInfo, projectRoot: process.cwd(), isWSL: wslFlag, serverConfig: getServerConfig(gitUser) });
+            return Response.json({ plan, origin, permissionMode, sharingEnabled, shareBaseUrl, pasteApiUrl, repoInfo, previousPlan, versionInfo, projectRoot: process.cwd(), cwd, isWSL: wslFlag, serverConfig: getServerConfig(gitUser) });
           }
 
           // API: Serve a linked markdown document
@@ -641,6 +678,118 @@ export async function startPlannotatorServer(
             });
           }
 
+          // --- Multi-Session Discovery API ---
+
+          // Parse session-scoped paths: /s/<sessionId>/api/...
+          const sessionRouteMatch = /^\/s\/([^/]+)(\/.+)$/.exec(url.pathname);
+          const resolvedPath = sessionRouteMatch ? sessionRouteMatch[2] : url.pathname;
+          const routeSessionId = sessionRouteMatch?.[1] ?? null;
+
+          // If accessing via /s/<wrongId>/api/..., validate the session exists
+          if (routeSessionId && resolvedPath.startsWith("/api/") && !sessionRegistry.has(routeSessionId)) {
+            return Response.json(
+              { error: "Session not found", sessionId: routeSessionId },
+              { status: 403 },
+            );
+          }
+
+          // GET /api/sessions — list active in-memory sessions
+          if (resolvedPath === "/api/sessions" && req.method === "GET") {
+            const sessions = Array.from(sessionRegistry.values()).map((s) => ({
+              sessionId: s.sessionId,
+              mode: s.mode,
+              origin: s.origin,
+              project: s.project,
+              slug: s.slug,
+              cwd: s.cwd,
+              url: `http://localhost:${port}/s/${s.sessionId}`,
+            }));
+            return Response.json({
+              sessions,
+              count: sessions.length,
+              maxSessions: MAX_SESSIONS_LIMIT,
+            });
+          }
+
+          // POST /api/sessions — create a new session
+          if (resolvedPath === "/api/sessions" && req.method === "POST") {
+            try {
+              const body = await req.json() as {
+                plan?: string;
+                mode?: string;
+                cwd?: string;
+                sessionId?: string;
+              };
+              if (!body.plan) {
+                return Response.json({ error: "plan is required" }, { status: 400 });
+              }
+              const newSessionId = body.sessionId || crypto.randomUUID();
+              const newSlug = generateSlug(body.plan);
+              const newProject = (await detectProjectName()) ?? "_unknown";
+              const newCwd = body.cwd ?? process.cwd();
+
+              // Save to history
+              saveToHistory(newProject, newSlug, body.plan);
+
+              const regSession: RegisteredSession = {
+                sessionId: newSessionId,
+                mode: body.mode ?? "plan",
+                origin,
+                project: newProject,
+                slug: newSlug,
+                cwd: newCwd,
+                plan: body.plan,
+                port,
+                registeredAt: Date.now(),
+              };
+              registerSession(regSession);
+
+              return Response.json({
+                sessionId: newSessionId,
+                url: `http://localhost:${port}/s/${newSessionId}`,
+                plan: body.plan.slice(0, 200),
+                slug: newSlug,
+                mode: regSession.mode,
+                project: newProject,
+              });
+            } catch (err) {
+              const message = err instanceof Error ? err.message : "Failed to create session";
+              return Response.json({ error: message }, { status: 500 });
+            }
+          }
+
+          // GET /api/plans — list all plans from history
+          if (resolvedPath === "/api/plans" && req.method === "GET") {
+            const plansProject = (await detectProjectName()) ?? "_unknown";
+            const plans = listProjectPlans(plansProject).map((p) => ({
+              ...p,
+              project: plansProject,
+            }));
+            return Response.json({ plans });
+          }
+
+          // GET /api/sessions/:sessionId — get session details
+          const sessionDetailMatch = /^\/api\/sessions\/([^/]+)$/.exec(resolvedPath);
+          if (sessionDetailMatch && req.method === "GET") {
+            const targetId = sessionDetailMatch[1];
+            const s = sessionRegistry.get(targetId);
+            if (!s) {
+              return Response.json(
+                { error: "Session not found", sessionId: targetId },
+                { status: 404 },
+              );
+            }
+            return Response.json({
+              sessionId: s.sessionId,
+              mode: s.mode,
+              origin: s.origin,
+              project: s.project,
+              slug: s.slug,
+              cwd: s.cwd,
+              planPreview: s.plan.slice(0, 300),
+            });
+          }
+
           // Favicon
           if (url.pathname === "/favicon.svg") return handleFavicon();
 
@@ -652,10 +801,31 @@ export async function startPlannotatorServer(
             );
           }
 
-          // Serve embedded HTML for all other routes (SPA)
-          return new Response(htmlContent, {
-            headers: { "Content-Type": "text/html" },
-          });
+          // SPA routing: /s/<sessionId>/... or root
+          const spaSessionMatch = /^\/s\/([^/]+)(\/?)$/.exec(url.pathname);
+          if (spaSessionMatch || url.pathname === "/" || url.pathname === "") {
+            // Inject session base path so client JS knows to fetch /s/{id}/api/...
+            let html = htmlContent;
+            const spaId = spaSessionMatch?.[1];
+            if (spaId) {
+              // Validate the session exists
+              if (!sessionRegistry.has(spaId)) {
+                return new Response(
+                  `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Session Not Found</title>` +
+                  `<style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#a1a1aa}` +
+                  `main{text-align:center;max-width:480px;padding:2rem}h1{font-size:1.25rem;margin-bottom:0.5rem;color:#f4f4f5}` +
+                  `p{color:#71717a;font-size:0.875rem;line-height:1.5}code{background:#27272a;padding:0.15em 0.4em;border-radius:4px;font-size:0.8rem}</style>` +
+                  `</head><body><main><h1>Session Not Found</h1>` +
+                  `<p>Session <code>${spaId}</code> is no longer active.</p></main></body></html>`,
+                  { status: 404, headers: { "Content-Type": "text/html" } },
+                );
+              }
+              html = html.replace(/<head>/, `<head><script>window.__PLANNOTATOR_SESSION_ID__="${spaId}";</script>`);
+            }
+            return new Response(html, {
+              headers: { "Content-Type": "text/html" },
+            });
+          }
         },
 
         error(err) {
@@ -691,7 +861,26 @@ export async function startPlannotatorServer(
   }
 
   const port = server.port!;
-  const serverUrl = getServerUrl(port);
+  let serverUrl = getServerUrl(port);
+
+  // Register this session in the multi-session registry
+  if (mode !== "archive") {
+    registerSession({
+      sessionId,
+      mode: mode ?? "plan",
+      origin,
+      project,
+      slug,
+      cwd,
+      plan,
+      port,
+      registeredAt: Date.now(),
+    });
+  }
+
+  if (sessionId) {
+    serverUrl = `${serverUrl}/s/${sessionId}`;
+  }
 
   // Notify caller that server is ready
   if (onReady) {
@@ -706,6 +895,9 @@ export async function startPlannotatorServer(
     cwd,
     waitForDecision: () => decisionPromise,
     ...(donePromise && { waitForDone: () => donePromise }),
-    stop: () => server.stop(),
+    stop: () => {
+      unregisterSession(sessionId);
+      server.stop();
+    },
   };
 }
