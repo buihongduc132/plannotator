@@ -341,6 +341,15 @@ export function listVersions(
  * List all plan slugs stored for a project.
  * Returns slugs sorted by most recently modified first.
  */
+export interface SessionScope {
+  sessionId: string;
+  cwd?: string;
+}
+
+export function sanitizeCwd(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^_+|_+$/g, "");
+}
+
 export function listProjectPlans(
   project: string
 ): Array<{ slug: string; versions: number; lastModified: string }> {
