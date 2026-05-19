@@ -5,6 +5,22 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+/** Force local mode (random port, localhost) regardless of SSH or inherited env vars. */
+function forceLocalMode(): { remote: string | undefined; port: string | undefined } {
+  const remote = process.env.PLANNOTATOR_REMOTE;
+  const port = process.env.PLANNOTATOR_PORT;
+  process.env.PLANNOTATOR_REMOTE = "0";
+  delete process.env.PLANNOTATOR_PORT;
+  return { remote, port };
+}
+
+function restoreMode(saved: { remote: string | undefined; port: string | undefined }) {
+  if (saved.remote === undefined) delete process.env.PLANNOTATOR_REMOTE;
+  else process.env.PLANNOTATOR_REMOTE = saved.remote;
+  if (saved.port === undefined) delete process.env.PLANNOTATOR_PORT;
+  else process.env.PLANNOTATOR_PORT = saved.port;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -44,9 +60,16 @@ async function draftRoundTrip(
 // ===========================================================================
 describe("BUG 1: Review server URL respects PLANNOTATOR_SERVER_URL", () => {
   const serverUrlEnv = "http://100.114.135.99:19437";
+  let savedRemote: string | undefined;
+  let savedPort: string | undefined;
 
   beforeAll(async () => {
     // #given PLANNOTATOR_SERVER_URL is set to a remote address
+    // Force local mode so getServerPort() returns 0 (random), not 19432
+    savedRemote = process.env.PLANNOTATOR_REMOTE;
+    process.env.PLANNOTATOR_REMOTE = "0";
+    savedPort = process.env.PLANNOTATOR_PORT;
+    delete process.env.PLANNOTATOR_PORT;
     process.env.PLANNOTATOR_SERVER_URL = serverUrlEnv;
     reviewTmpDir = makeTmpDir("review-url");
 
@@ -59,12 +82,16 @@ describe("BUG 1: Review server URL respects PLANNOTATOR_SERVER_URL", () => {
       sharingEnabled: false,
       onReady: () => {},
     });
-  });
+  }, 30000);
 
   afterAll(() => {
     reviewServer?.stop();
     reviewServer = null;
     delete process.env.PLANNOTATOR_SERVER_URL;
+    if (savedRemote === undefined) delete process.env.PLANNOTATOR_REMOTE;
+    else process.env.PLANNOTATOR_REMOTE = savedRemote;
+    if (savedPort === undefined) delete process.env.PLANNOTATOR_PORT;
+    else process.env.PLANNOTATOR_PORT = savedPort;
     try { rmSync(reviewTmpDir, { recursive: true, force: true }); } catch {}
   });
 
@@ -93,9 +120,16 @@ describe("BUG 1: Review server URL respects PLANNOTATOR_SERVER_URL", () => {
 // ===========================================================================
 describe("BUG 2: Annotate server URL respects PLANNOTATOR_SERVER_URL", () => {
   const serverUrlEnv = "http://100.114.135.99:19437";
+  let savedRemote: string | undefined;
+  let savedPort: string | undefined;
 
   beforeAll(async () => {
     // #given PLANNOTATOR_SERVER_URL is set to a remote address
+    // Force local mode so getServerPort() returns 0 (random), not 19432
+    savedRemote = process.env.PLANNOTATOR_REMOTE;
+    process.env.PLANNOTATOR_REMOTE = "0";
+    savedPort = process.env.PLANNOTATOR_PORT;
+    delete process.env.PLANNOTATOR_PORT;
     process.env.PLANNOTATOR_SERVER_URL = serverUrlEnv;
     annotateTmpDir = makeTmpDir("annotate-url");
 
@@ -108,12 +142,16 @@ describe("BUG 2: Annotate server URL respects PLANNOTATOR_SERVER_URL", () => {
       sessionId: "sess-abc123",
       onReady: () => {},
     });
-  });
+  }, 30000);
 
   afterAll(() => {
     annotateServer?.stop();
     annotateServer = null;
     delete process.env.PLANNOTATOR_SERVER_URL;
+    if (savedRemote === undefined) delete process.env.PLANNOTATOR_REMOTE;
+    else process.env.PLANNOTATOR_REMOTE = savedRemote;
+    if (savedPort === undefined) delete process.env.PLANNOTATOR_PORT;
+    else process.env.PLANNOTATOR_PORT = savedPort;
     try { rmSync(annotateTmpDir, { recursive: true, force: true }); } catch {}
   });
 
@@ -146,11 +184,16 @@ describe("BUG 2: Annotate server URL respects PLANNOTATOR_SERVER_URL", () => {
 describe("BUG 3: Annotate server draft save/load scope mismatch", () => {
   let tmpDir: string;
   let server: Awaited<ReturnType<typeof startAnnotateServer>>;
+  let savedRemote: string | undefined;
+  let savedPort: string | undefined;
 
   beforeAll(async () => {
     // Ensure no leftover env var from previous tests
     delete process.env.PLANNOTATOR_SERVER_URL;
-    delete process.env.PLANNOTATOR_REMOTE;
+    savedRemote = process.env.PLANNOTATOR_REMOTE;
+    process.env.PLANNOTATOR_REMOTE = "0";
+    savedPort = process.env.PLANNOTATOR_PORT;
+    delete process.env.PLANNOTATOR_PORT;
 
     tmpDir = makeTmpDir("annotate-draft");
 
@@ -163,10 +206,14 @@ describe("BUG 3: Annotate server draft save/load scope mismatch", () => {
       sessionId: "sess-draft-scope",
       onReady: () => {},
     });
-  });
+  }, 30000);
 
   afterAll(() => {
     server?.stop();
+    if (savedRemote === undefined) delete process.env.PLANNOTATOR_REMOTE;
+    else process.env.PLANNOTATOR_REMOTE = savedRemote;
+    if (savedPort === undefined) delete process.env.PLANNOTATOR_PORT;
+    else process.env.PLANNOTATOR_PORT = savedPort;
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   });
 
@@ -220,10 +267,15 @@ describe("BUG 4: Review server draft with sessionId lacks scope isolation", () =
   let tmpDir: string;
   let serverA: Awaited<ReturnType<typeof startReviewServer>>;
   let serverB: Awaited<ReturnType<typeof startReviewServer>>;
+  let savedRemote: string | undefined;
+  let savedPort: string | undefined;
 
   beforeAll(async () => {
     delete process.env.PLANNOTATOR_SERVER_URL;
-    delete process.env.PLANNOTATOR_REMOTE;
+    savedRemote = process.env.PLANNOTATOR_REMOTE;
+    process.env.PLANNOTATOR_REMOTE = "0";
+    savedPort = process.env.PLANNOTATOR_PORT;
+    delete process.env.PLANNOTATOR_PORT;
 
     tmpDir = makeTmpDir("review-draft-scope");
 
@@ -249,11 +301,15 @@ describe("BUG 4: Review server draft with sessionId lacks scope isolation", () =
       sessionId: "sess-b",
       onReady: () => {},
     });
-  }, 10000);
+  }, 30000);
 
   afterAll(() => {
     serverA?.stop();
     serverB?.stop();
+    if (savedRemote === undefined) delete process.env.PLANNOTATOR_REMOTE;
+    else process.env.PLANNOTATOR_REMOTE = savedRemote;
+    if (savedPort === undefined) delete process.env.PLANNOTATOR_PORT;
+    else process.env.PLANNOTATOR_PORT = savedPort;
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   });
 

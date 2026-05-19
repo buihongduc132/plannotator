@@ -31,6 +31,7 @@ describe("API route 404 guards", () => {
     controllers.push(controller);
     const server = await startPlannotatorServer({
       plan: "# Test Plan\n\nHello",
+      htmlContent: "<!DOCTYPE html><html><body>test</body></html>",
       signal: controller.signal,
     });
 
@@ -50,6 +51,7 @@ describe("API route 404 guards", () => {
     controllers.push(controller);
     const server = await startPlannotatorServer({
       plan: "# Test",
+      htmlContent: "<!DOCTYPE html><html><body>test</body></html>",
       signal: controller.signal,
     });
 

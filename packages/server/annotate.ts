@@ -43,6 +43,10 @@ export interface AnnotateServerOptions {
   mode?: "annotate" | "annotate-last" | "annotate-folder";
   /** Folder path when annotating a directory (used as projectRoot for file browser) */
   folderPath?: string;
+  /** Working directory for the project (defaults to process.cwd()) */
+  cwd?: string;
+  /** Session identifier for multi-session isolation */
+  sessionId?: string;
   /** Whether URL sharing is enabled (default: true) */
   sharingEnabled?: boolean;
   /** Custom base URL for share links */
@@ -116,8 +120,12 @@ export async function startAnnotateServer(
     gate = false,
     rawHtml,
     renderHtml = false,
+    cwd: optCwd,
+    sessionId: optSessionId,
     onReady,
   } = options;
+  const cwd = optCwd ?? process.cwd();
+  const sessionId = optSessionId ?? crypto.randomUUID();
 
   const isRemote = isRemoteSession();
   const configuredPort = getServerPort();
@@ -177,6 +185,8 @@ export async function startAnnotateServer(
               shareBaseUrl,
               pasteApiUrl,
               repoInfo,
+              cwd,
+              sessionId,
               projectRoot: folderPath || process.cwd(),
               isWSL: wslFlag,
               serverConfig: getServerConfig(gitUser),
@@ -351,7 +361,10 @@ export async function startAnnotateServer(
   }
 
   const port = server.port!;
-  const serverUrl = getServerUrl(port);
+  let serverUrl = getServerUrl(port);
+  if (options.sessionId) {
+    serverUrl = `${serverUrl}/s/${options.sessionId}`;
+  }
 
   // Notify caller that server is ready
   if (onReady) {

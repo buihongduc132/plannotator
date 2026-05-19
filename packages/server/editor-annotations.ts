@@ -35,7 +35,7 @@ export function createEditorAnnotationHandler(): EditorAnnotationHandler {
             comment?: string;
           };
 
-          if (!body.filePath || !body.selectedText || !body.lineStart || !body.lineEnd) {
+          if (!body.filePath || !body.selectedText || body.lineStart == null || body.lineEnd == null) {
             return Response.json({ error: "Missing required fields" }, { status: 400 });
           }
 

@@ -98,6 +98,10 @@ export interface ReviewServerOptions {
   worktreePool?: import("@plannotator/shared/worktree-pool").WorktreePool;
   /** Cleanup callback invoked when server stops (e.g., remove temp worktree) */
   onCleanup?: () => void | Promise<void>;
+  /** Session identifier for multi-session isolation */
+  sessionId?: string;
+  /** Working directory for the project (exposed in API as cwd) */
+  cwd?: string;
 }
 
 export interface ReviewServerResult {
@@ -135,7 +139,9 @@ const RETRY_DELAY_MS = 500;
 export async function startReviewServer(
   options: ReviewServerOptions
 ): Promise<ReviewServerResult> {
-  const { htmlContent, origin, gitContext, sharingEnabled = true, shareBaseUrl, onReady } = options;
+  const { htmlContent, origin, gitContext, sharingEnabled = true, shareBaseUrl, onReady, sessionId: optSessionId, cwd: optCwd } = options;
+  const sessionId = optSessionId ?? crypto.randomUUID();
+  const cwd = optCwd ?? options.agentCwd ?? process.cwd();
 
   let prMetadata = options.prMetadata;
   const isPRMode = !!prMetadata;
@@ -538,6 +544,8 @@ export async function startReviewServer(
               shareBaseUrl,
               repoInfo,
               isWSL: wslFlag,
+              cwd: cwd,
+              sessionId,
               ...(options.agentCwd && { agentCwd: options.agentCwd }),
               ...(isPRMode && {
                 prMetadata,
@@ -550,6 +558,19 @@ export async function startReviewServer(
               ...(isPRMode && initialViewedFiles.length > 0 && { viewedFiles: initialViewedFiles }),
               ...(currentError && { error: currentError }),
               serverConfig: getServerConfig(gitUser),
+            });
+          }
+
+          // API: List sessions (single-server mode returns current session)
+          if (url.pathname === "/api/sessions" && req.method === "GET") {
+            return Response.json({
+              sessions: [{
+                sessionId,
+                cwd,
+                port: server.port,
+                url: serverUrl,
+                createdAt: Date.now(),
+              }],
             });
           }
 
@@ -1003,9 +1024,10 @@ export async function startReviewServer(
 
           // API: Annotation draft persistence
           if (url.pathname === "/api/draft") {
-            if (req.method === "POST") return handleDraftSave(req, draftKey);
-            if (req.method === "DELETE") return handleDraftDelete(draftKey);
-            return handleDraftLoad(draftKey);
+            const draftScope = { sessionId, cwd };
+            if (req.method === "POST") return handleDraftSave(req, draftKey, draftScope);
+            if (req.method === "DELETE") return handleDraftDelete(draftKey, draftScope);
+            return handleDraftLoad(draftKey, draftScope);
           }
 
           // API: Editor annotations (VS Code extension)
@@ -1026,7 +1048,7 @@ export async function startReviewServer(
 
           // API: Exit review session without feedback
           if (url.pathname === "/api/exit" && req.method === "POST") {
-            deleteDraft(draftKey);
+            deleteDraft(draftKey, { sessionId, cwd });
             resolveDecision({ approved: false, feedback: "", annotations: [], exit: true });
             return Response.json({ ok: true });
           }
@@ -1041,7 +1063,7 @@ export async function startReviewServer(
                 agentSwitch?: string;
               };
 
-              deleteDraft(draftKey);
+              deleteDraft(draftKey, { sessionId, cwd });
               resolveDecision({
                 approved: body.approved ?? false,
                 feedback: body.feedback || "",
@@ -1197,6 +1219,9 @@ export async function startReviewServer(
 
   const port = server.port!;
   serverUrl = getServerUrl(port);
+  if (options.sessionId) {
+    serverUrl = `${serverUrl}/s/${options.sessionId}`;
+  }
   const exitHandler = () => agentJobs.killAll();
   process.once("exit", exitHandler);
 

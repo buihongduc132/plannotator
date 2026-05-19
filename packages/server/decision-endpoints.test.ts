@@ -33,6 +33,7 @@ describe("/api/decision endpoints", () => {
     controllers.push(controller);
     const server = await startPlannotatorServer({
       plan: "# Test Plan",
+      htmlContent: "<!DOCTYPE html><html><body>test</body></html>",
       signal: controller.signal,
     });
 
@@ -49,6 +50,7 @@ describe("/api/decision endpoints", () => {
     controllers.push(controller);
     const server = await startPlannotatorServer({
       plan: "# Test Plan",
+      htmlContent: "<!DOCTYPE html><html><body>test</body></html>",
       signal: controller.signal,
     });
 
@@ -75,6 +77,7 @@ describe("/api/decision endpoints", () => {
     controllers.push(controller);
     const server = await startPlannotatorServer({
       plan: "# Test Plan",
+      htmlContent: "<!DOCTYPE html><html><body>test</body></html>",
       signal: controller.signal,
     });
 

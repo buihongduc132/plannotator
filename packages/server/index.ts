@@ -270,8 +270,13 @@ export async function startPlannotatorServer(
         async fetch(req, server) {
           const url = new URL(req.url);
 
+          // Parse session-scoped paths: /s/<sessionId>/api/...
+          const sessionRouteMatch = /^\/s\/([^/]+)(\/.+)$/.exec(url.pathname);
+          const resolvedPath = sessionRouteMatch ? sessionRouteMatch[2] : url.pathname;
+          const routeSessionId = sessionRouteMatch?.[1] ?? null;
+
           // API: Get a specific plan version from history
-          if (url.pathname === "/api/plan/version") {
+          if (resolvedPath === "/api/plan/version") {
             const vParam = url.searchParams.get("v");
             if (!vParam) {
               return new Response("Missing v parameter", { status: 400 });
@@ -288,7 +293,7 @@ export async function startPlannotatorServer(
           }
 
           // API: List all versions for the current plan
-          if (url.pathname === "/api/plan/versions") {
+          if (resolvedPath === "/api/plan/versions") {
             return Response.json({
               project,
               slug,
@@ -298,14 +303,14 @@ export async function startPlannotatorServer(
 
           // API: List archived plans (from ~/.plannotator/plans/)
           // Cached for session lifetime — new plans won't appear during a single review
-          if (url.pathname === "/api/archive/plans" && req.method === "GET") {
+          if (resolvedPath === "/api/archive/plans" && req.method === "GET") {
             const customPath = url.searchParams.get("customPath") || undefined;
             if (!cachedArchivePlans) cachedArchivePlans = listArchivedPlans(customPath);
             return Response.json({ plans: cachedArchivePlans });
           }
 
           // API: Get a specific archived plan
-          if (url.pathname === "/api/archive/plan" && req.method === "GET") {
+          if (resolvedPath === "/api/archive/plan" && req.method === "GET") {
             const filename = url.searchParams.get("filename");
             if (!filename) {
               return Response.json({ error: "Missing filename parameter" }, { status: 400 });
@@ -319,13 +324,13 @@ export async function startPlannotatorServer(
           }
 
           // API: Close archive browser (archive mode only)
-          if (url.pathname === "/api/done" && req.method === "POST") {
+          if (resolvedPath === "/api/done" && req.method === "POST") {
             resolveDone?.();
             return Response.json({ ok: true });
           }
 
           // API: Get plan content
-          if (url.pathname === "/api/plan") {
+          if (resolvedPath === "/api/plan") {
             if (mode === "archive") {
               return Response.json({
                 plan: initialArchivePlan,
@@ -342,17 +347,17 @@ export async function startPlannotatorServer(
           }
 
           // API: Serve a linked markdown document
-          if (url.pathname === "/api/doc" && req.method === "GET") {
+          if (resolvedPath === "/api/doc" && req.method === "GET") {
             return handleDoc(req);
           }
 
           // API: Batch existence check for code-file paths the renderer detected
-          if (url.pathname === "/api/doc/exists" && req.method === "POST") {
+          if (resolvedPath === "/api/doc/exists" && req.method === "POST") {
             return handleDocExists(req);
           }
 
           // API: Hook status for the Settings Hooks tab
-          if (url.pathname === "/api/hooks/status" && req.method === "GET") {
+          if (resolvedPath === "/api/hooks/status" && req.method === "GET") {
             const config = loadConfig();
             const hook = readImprovementHook("enterplanmode-improve");
             const pfmEnabled = config.pfmReminder === true;
@@ -373,7 +378,7 @@ export async function startPlannotatorServer(
           }
 
           // API: Update user config (write-back to ~/.plannotator/config.json)
-          if (url.pathname === "/api/config" && req.method === "POST") {
+          if (resolvedPath === "/api/config" && req.method === "POST") {
             try {
               const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null; pfmReminder?: boolean };
               const toSave: Record<string, unknown> = {};
@@ -390,17 +395,17 @@ export async function startPlannotatorServer(
           }
 
           // API: Serve images (local paths or temp uploads)
-          if (url.pathname === "/api/image") {
+          if (resolvedPath === "/api/image") {
             return handleImage(req);
           }
 
           // API: Upload image -> save to temp -> return path
-          if (url.pathname === "/api/upload" && req.method === "POST") {
+          if (resolvedPath === "/api/upload" && req.method === "POST") {
             return handleUpload(req);
           }
 
           // API: Open plan diff in VS Code
-          if (url.pathname === "/api/plan/vscode-diff" && req.method === "POST") {
+          if (resolvedPath === "/api/plan/vscode-diff" && req.method === "POST") {
             try {
               const body = (await req.json()) as { baseVersion: number };
 
@@ -425,32 +430,32 @@ export async function startPlannotatorServer(
           }
 
           // API: Detect Obsidian vaults
-          if (url.pathname === "/api/obsidian/vaults") {
+          if (resolvedPath === "/api/obsidian/vaults") {
             return handleObsidianVaults();
           }
 
           // API: List Obsidian vault files as a tree
-          if (url.pathname === "/api/reference/obsidian/files" && req.method === "GET") {
+          if (resolvedPath === "/api/reference/obsidian/files" && req.method === "GET") {
             return handleObsidianFiles(req);
           }
 
           // API: Read an Obsidian vault document
-          if (url.pathname === "/api/reference/obsidian/doc" && req.method === "GET") {
+          if (resolvedPath === "/api/reference/obsidian/doc" && req.method === "GET") {
             return handleObsidianDoc(req);
           }
 
           // API: List markdown files in a directory as a tree
-          if (url.pathname === "/api/reference/files" && req.method === "GET") {
+          if (resolvedPath === "/api/reference/files" && req.method === "GET") {
             return handleFileBrowserFiles(req);
           }
 
           // API: Get available agents (OpenCode only)
-          if (url.pathname === "/api/agents") {
+          if (resolvedPath === "/api/agents") {
             return handleAgents(options.opencodeClient);
           }
 
           // API: Annotation draft persistence
-          if (url.pathname === "/api/draft") {
+          if (resolvedPath === "/api/draft") {
             if (req.method === "POST") return handleDraftSave(req, draftKey);
             if (req.method === "DELETE") return handleDraftDelete(draftKey);
             return handleDraftLoad(draftKey);
@@ -467,7 +472,7 @@ export async function startPlannotatorServer(
           if (externalResponse) return externalResponse;
 
           // API: Save to notes (decoupled from approve/deny)
-          if (url.pathname === "/api/save-notes" && req.method === "POST") {
+          if (resolvedPath === "/api/save-notes" && req.method === "POST") {
             const results: { obsidian?: IntegrationResult; bear?: IntegrationResult; octarine?: IntegrationResult } = {};
 
             try {
@@ -504,7 +509,7 @@ export async function startPlannotatorServer(
           }
 
           // API: Approve plan
-          if (url.pathname === "/api/approve" && req.method === "POST") {
+          if (resolvedPath === "/api/approve" && req.method === "POST") {
             // Check for note integrations and optional feedback
             let feedback: string | undefined;
             let agentSwitch: string | undefined;
@@ -589,7 +594,7 @@ export async function startPlannotatorServer(
           }
 
           // API: Deny with feedback
-          if (url.pathname === "/api/deny" && req.method === "POST") {
+          if (resolvedPath === "/api/deny" && req.method === "POST") {
             let feedback = "Plan rejected by user";
             let planSaveEnabled = true; // default to enabled for backwards compat
             let planSaveCustomPath: string | undefined;
@@ -625,7 +630,7 @@ export async function startPlannotatorServer(
 
           // --- Decision polling endpoint ---
           // For remote clients that can't await waitForDecision() directly.
-          if (url.pathname === "/api/decision" && req.method === "GET") {
+          if (resolvedPath === "/api/decision" && req.method === "GET") {
             // Check if the decision has been made by looking at the stored result
             if (decisionResult) {
               return Response.json(decisionResult);
@@ -635,7 +640,7 @@ export async function startPlannotatorServer(
 
           // --- Decision SSE stream ---
           // Real-time notification for remote clients.
-          if (url.pathname === "/api/decision/stream" && req.method === "GET") {
+          if (resolvedPath === "/api/decision/stream" && req.method === "GET") {
             const stream = new ReadableStream({
               start(controller) {
                 const encoder = new TextEncoder();
@@ -680,10 +685,7 @@ export async function startPlannotatorServer(
 
           // --- Multi-Session Discovery API ---
 
-          // Parse session-scoped paths: /s/<sessionId>/api/...
-          const sessionRouteMatch = /^\/s\/([^/]+)(\/.+)$/.exec(url.pathname);
-          const resolvedPath = sessionRouteMatch ? sessionRouteMatch[2] : url.pathname;
-          const routeSessionId = sessionRouteMatch?.[1] ?? null;
+          // sessionRouteMatch, resolvedPath, routeSessionId are parsed at top of fetch handler
 
           // If accessing via /s/<wrongId>/api/..., validate the session exists
           if (routeSessionId && resolvedPath.startsWith("/api/") && !sessionRegistry.has(routeSessionId)) {
@@ -794,19 +796,20 @@ export async function startPlannotatorServer(
           if (url.pathname === "/favicon.svg") return handleFavicon();
 
           // API 404 guard: unknown /api/* routes should return JSON, not HTML
-          if (url.pathname.startsWith("/api/")) {
+          if (resolvedPath.startsWith("/api/")) {
             return Response.json(
-              { error: "Not found", path: url.pathname },
+              { error: "Not found", path: resolvedPath },
               { status: 404 },
             );
           }
 
-          // SPA routing: /s/<sessionId>/... or root
+          // SPA routing: /s/<sessionId>/... or root or any non-API path
           const spaSessionMatch = /^\/s\/([^/]+)(\/?)$/.exec(url.pathname);
-          if (spaSessionMatch || url.pathname === "/" || url.pathname === "") {
+          const spaSubPath = /^\/s\/([^/]+)\/(.*)$/.exec(url.pathname);
+          if (spaSessionMatch || spaSubPath || url.pathname === "/" || url.pathname === "") {
             // Inject session base path so client JS knows to fetch /s/{id}/api/...
             let html = htmlContent;
-            const spaId = spaSessionMatch?.[1];
+            const spaId = spaSessionMatch?.[1] ?? spaSubPath?.[1];
             if (spaId) {
               // Validate the session exists
               if (!sessionRegistry.has(spaId)) {
