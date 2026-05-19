@@ -12,7 +12,7 @@ import {
 } from "./handlers.js";
 import { html, json, parseBody, requestUrl, extractSessionSlug, injectSessionPath } from "./helpers.js";
 
-import { listenOnPort } from "./network.js";
+import { listenOnPort, buildServerUrl, getServerHostname } from "./network.js";
 
 import { getRepoInfo } from "./project.js";
 import {
@@ -185,7 +185,7 @@ export async function startAnnotateServer(options: {
 					sessionId: ownSession.sessionId,
 					mode: ownSession.mode,
 					filePath: ownSession.filePath,
-					url: `http://localhost:${ownSession.port}${sessionId ? `/s/${sessionId}` : ""}`,
+					url: `${buildServerUrl(getServerHostname(), ownSession.port)}${sessionId ? `/s/${sessionId}` : ""}`,
 				}],
 				count: 1,
 			});
@@ -228,7 +228,8 @@ export async function startAnnotateServer(options: {
 	const { port, portSource } = await listenOnPort(server);
 	ownSession.port = port;
 
-	const sessionUrl = sessionId ? `http://localhost:${port}/s/${sessionId}` : `http://localhost:${port}`;
+	const baseUrl = buildServerUrl(getServerHostname(), port);
+	const sessionUrl = sessionId ? `${baseUrl}/s/${sessionId}` : baseUrl;
 
 	return {
 		port,

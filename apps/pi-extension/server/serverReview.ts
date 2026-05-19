@@ -55,7 +55,7 @@ import {
 } from "./handlers.js";
 import { extractSessionSlug, html, injectSessionPath, json, parseBody, requestUrl, toWebRequest } from "./helpers.js";
 
-import { isRemoteSession, listenOnPort } from "./network.js";
+import { isRemoteSession, listenOnPort, buildServerUrl, getServerHostname } from "./network.js";
 import { parseSessionPath } from "./session-registry.js";
 import {
 	fetchPR,
@@ -1101,7 +1101,7 @@ export async function startReviewServer(options: {
 					sessionId: ownSession.sessionId,
 					mode: ownSession.mode,
 					origin: ownSession.origin,
-					url: `http://localhost:${ownSession.port}${sessionId ? `/s/${sessionId}` : ""}`,
+					url: `${buildServerUrl(getServerHostname(), ownSession.port)}${sessionId ? `/s/${sessionId}` : ""}`,
 				}],
 				count: 1,
 			});
@@ -1202,9 +1202,9 @@ export async function startReviewServer(options: {
 	});
 
 	const { port, portSource } = await listenOnPort(server);
-	serverUrl = `http://localhost:${port}`;
+	serverUrl = buildServerUrl(getServerHostname(), port);
 	ownSession.port = port;
-	const sessionUrl = sessionId ? `http://localhost:${port}/s/${sessionId}` : serverUrl;
+	const sessionUrl = sessionId ? `${serverUrl}/s/${sessionId}` : serverUrl;
 	const exitHandler = () => agentJobs.killAll();
 	process.once("exit", exitHandler);
 

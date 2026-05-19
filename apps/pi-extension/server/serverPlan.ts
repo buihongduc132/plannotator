@@ -35,7 +35,7 @@ import {
 	saveToObsidian,
 	saveToOctarine,
 } from "./integrations.js";
-import { listenOnPort } from "./network.js";
+import { listenOnPort, buildServerUrl, getServerHostname } from "./network.js";
 
 import { loadConfig, saveConfig, detectGitUser, getServerConfig } from "../generated/config.js";
 import { readImprovementHook, getImprovementHookExpectedPath } from "../generated/improvement-hooks.js";
@@ -413,7 +413,7 @@ export async function startPlanReviewServer(options: {
 					slug,
 					name: null,
 					cwd: process.cwd(),
-					url: `http://localhost:${serverPort}`,
+					url: buildServerUrl(getServerHostname(), serverPort),
 				}],
 				count: 1,
 			});
@@ -430,7 +430,7 @@ export async function startPlanReviewServer(options: {
 				// In single-session mode, we just return the existing session
 				json(res, {
 					sessionId: reviewId,
-					url: `http://localhost:${serverPort}/s/${reviewId}`,
+					url: `${buildServerUrl(getServerHostname(), serverPort)}/s/${reviewId}`,
 					plan: body.plan.slice(0, 200),
 					name: body.name ?? null,
 					mode: options.mode ?? "plan",
@@ -566,7 +566,7 @@ export async function startPlanReviewServer(options: {
 		reviewId,
 		port,
 		portSource,
-		url: `http://localhost:${port}`,
+		url: buildServerUrl(getServerHostname(), port),
 		waitForDecision: () => decisionPromise,
 		onDecision: (listener) => {
 			decisionListeners.add(listener);

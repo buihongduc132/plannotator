@@ -25,7 +25,7 @@ import { listArchivedPlans, readArchivedPlan } from "../generated/storage.js";
 import { detectProjectName } from "./project.js";
 import { handleFavicon, handleImageRequest, handleUploadRequest } from "./handlers.js";
 import { extractSessionSlug, html, injectSessionPath, json, parseBody, requestUrl } from "./helpers.js";
-import { buildServerUrl, getServerHost, getServerPort, isRemoteSession, listenOnPort, openBrowser } from "./network.js";
+import { buildServerUrl, getServerHost, getServerHostname, getServerPort, isRemoteSession, listenOnPort, openBrowser } from "./network.js";
 import { handleDocRequest, handleFileBrowserRequest, handleObsidianDocRequest, handleObsidianFilesRequest, handleObsidianVaultsRequest } from "./reference.js";
 
 export interface MultiSessionPlanResult {
@@ -51,12 +51,12 @@ async function probeExistingServer(port: number): Promise<{ alive: boolean; url:
 	try {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 500);
-		const res = await fetch(`http://localhost:${port}/api/agents`, { signal: controller.signal });
+		const res = await fetch(`${buildServerUrl(getServerHostname(), port)}/api/agents`, { signal: controller.signal });
 		clearTimeout(timeout);
 		if (res.ok) {
 			const body = (await res.json()) as any;
 			if (body && typeof body === "object" && "agents" in body) {
-				return { alive: true, url: `http://localhost:${port}` };
+				return { alive: true, url: buildServerUrl(getServerHostname(), port) };
 			}
 		}
 		return { alive: false, url: "" };

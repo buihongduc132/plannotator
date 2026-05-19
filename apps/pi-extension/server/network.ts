@@ -69,7 +69,37 @@ export function getServerPort(): {
 }
 
 export function getServerHostname(): string {
+	const hostOverride = process.env.PLANNOTATOR_HOST;
+	if (hostOverride) return hostOverride;
 	return isRemoteSession() ? "0.0.0.0" : LOOPBACK_HOST;
+}
+
+/** Alias for getServerHostname (used by serverMultiSession) */
+export function getServerHost(): string {
+	return getServerHostname();
+}
+
+/**
+ * Build the public-facing server URL.
+ *
+ * Priority:
+ * 1. PLANNOTATOR_SERVER_URL — full URL override (e.g. "http://100.114.135.99:19432")
+ * 2. Constructed from hostname + port (0.0.0.0 is advertised as localhost)
+ */
+export function buildServerUrl(hostname: string, port: number): string {
+	const serverUrl = process.env.PLANNOTATOR_SERVER_URL;
+	if (serverUrl) return serverUrl;
+
+	// For 0.0.0.0 (remote), advertise localhost since 0.0.0.0 isn't clickable
+	const displayHost = hostname === "0.0.0.0" ? "localhost" : hostname;
+	return `http://${displayHost}:${port}`;
+}
+
+/**
+ * Convenience: build server URL from the configured hostname and a port.
+ */
+export function getServerUrl(port: number): string {
+	return buildServerUrl(getServerHostname(), port);
 }
 
 const MAX_RETRIES = 5;
