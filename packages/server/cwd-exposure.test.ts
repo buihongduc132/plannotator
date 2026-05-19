@@ -1,4 +1,4 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { describe, expect, test, afterEach, beforeAll, afterAll } from "bun:test";
 import { startPlannotatorServer } from "./index";
 import { startAnnotateServer } from "./annotate";
 import { startReviewServer } from "./review";
@@ -6,6 +6,22 @@ import { randomUUID } from "crypto";
 
 describe("CWD Exposure in Server API", () => {
   let servers: any[] = [];
+  let savedRemote: string | undefined;
+  let savedPort: string | undefined;
+
+  beforeAll(() => {
+    savedRemote = process.env.PLANNOTATOR_REMOTE;
+    savedPort = process.env.PLANNOTATOR_PORT;
+    process.env.PLANNOTATOR_REMOTE = "0";
+    delete process.env.PLANNOTATOR_PORT;
+  });
+
+  afterAll(() => {
+    if (savedRemote === undefined) delete process.env.PLANNOTATOR_REMOTE;
+    else process.env.PLANNOTATOR_REMOTE = savedRemote;
+    if (savedPort === undefined) delete process.env.PLANNOTATOR_PORT;
+    else process.env.PLANNOTATOR_PORT = savedPort;
+  });
 
   afterEach(() => {
     for (const server of servers) {
