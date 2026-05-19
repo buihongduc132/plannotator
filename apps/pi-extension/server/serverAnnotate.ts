@@ -10,7 +10,7 @@ import {
 	handleImageRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { html, json, parseBody, requestUrl } from "./helpers.js";
+import { html, json, parseBody, requestUrl, extractSessionSlug, injectSessionPath } from "./helpers.js";
 
 import { listenOnPort } from "./network.js";
 
@@ -25,6 +25,7 @@ import {
 } from "./reference.js";
 import { warmFileListCache } from "../generated/resolve-file.js";
 import { createExternalAnnotationHandler } from "./external-annotations.js";
+import { parseSessionPath } from "./session-registry.js";
 
 export interface AnnotateServerResult {
 	port: number;
@@ -49,6 +50,8 @@ export async function startAnnotateServer(options: {
 	gate?: boolean;
 	rawHtml?: string;
 	renderHtml?: boolean;
+	sessionId?: string;
+	cwd?: string;
 }): Promise<AnnotateServerResult> {
 	// Side-channel pre-warm so /api/doc/exists POSTs land on warm cache.
 	void warmFileListCache(process.cwd(), "code");
@@ -87,13 +90,39 @@ export async function startAnnotateServer(options: {
 
 	const externalAnnotations = createExternalAnnotationHandler("plan");
 
+	// Session info
+	const sessionId = options.sessionId;
+	const serverCwd = options.cwd || process.cwd();
+
+	// Track this server's own session for /api/sessions
+	const ownSession = {
+		sessionId: sessionId || "default",
+		mode: (options.mode || "annotate") as string,
+		filePath: options.filePath,
+		port: 0 as number,
+	};
+
 	const server = createServer(async (req, res) => {
 		const url = requestUrl(req);
 
+		// --- Session routing ---
+		const { sessionId: pathSessionId, apiPath } = parseSessionPath(url.pathname);
+
+		if (pathSessionId !== null) {
+			// This is a /s/{sessionId}/... path — validate session
+			if (pathSessionId !== sessionId) {
+				json(res, { error: "Session mismatch" }, 403);
+				return;
+			}
+			// Rewrite pathname to the apiPath for downstream handlers
+			url.pathname = apiPath;
+		}
+
+		// External annotations handler (after session routing so URL is rewritten)
 		if (await externalAnnotations.handle(req, res, url)) return;
 
 		if (url.pathname === "/api/plan" && req.method === "GET") {
-			json(res, {
+			const response: Record<string, unknown> = {
 				plan: options.markdown,
 				origin: options.origin ?? "pi",
 				mode: options.mode || "annotate",
@@ -107,9 +136,12 @@ export async function startAnnotateServer(options: {
 				shareBaseUrl,
 				pasteApiUrl,
 				repoInfo,
-				projectRoot: options.folderPath || process.cwd(),
+				projectRoot: options.folderPath || serverCwd,
+				cwd: serverCwd,
 				serverConfig: getServerConfig(gitUser),
-			});
+			};
+			if (sessionId) response.sessionId = sessionId;
+			json(res, response);
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			try {
 				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean };
@@ -147,6 +179,16 @@ export async function startAnnotateServer(options: {
 			handleFileBrowserRequest(res, url);
 		} else if (url.pathname === "/favicon.svg") {
 			handleFavicon(res);
+		} else if (url.pathname === "/api/sessions" && req.method === "GET") {
+			json(res, {
+				sessions: [{
+					sessionId: ownSession.sessionId,
+					mode: ownSession.mode,
+					filePath: ownSession.filePath,
+					url: `http://localhost:${ownSession.port}${sessionId ? `/s/${sessionId}` : ""}`,
+				}],
+				count: 1,
+			});
 		} else if (url.pathname === "/api/exit" && req.method === "POST") {
 			deleteDraft(draftKey);
 			resolveDecision({ feedback: "", annotations: [], exit: true });
@@ -169,16 +211,29 @@ export async function startAnnotateServer(options: {
 				json(res, { error: message }, 500);
 			}
 		} else {
+			// Check for bare /s/{sessionId} or /s/{sessionId}/ paths (no API route)
+			const bareSlug = extractSessionSlug(url.pathname);
+			if (bareSlug !== null) {
+				if (bareSlug !== sessionId) {
+					json(res, { error: "Session mismatch" }, 403);
+					return;
+				}
+				html(res, injectSessionPath(options.htmlContent, bareSlug));
+				return;
+			}
 			html(res, options.htmlContent);
 		}
 	});
 
 	const { port, portSource } = await listenOnPort(server);
+	ownSession.port = port;
+
+	const sessionUrl = sessionId ? `http://localhost:${port}/s/${sessionId}` : `http://localhost:${port}`;
 
 	return {
 		port,
 		portSource,
-		url: `http://localhost:${port}`,
+		url: sessionUrl,
 		waitForDecision: () => decisionPromise,
 		stop: () => server.close(),
 	};
