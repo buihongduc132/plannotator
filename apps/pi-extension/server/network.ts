@@ -102,50 +102,42 @@ export function getServerUrl(port: number): string {
 	return buildServerUrl(getServerHostname(), port);
 }
 
-const MAX_RETRIES = 5;
-const RETRY_DELAY_MS = 500;
-
 export async function listenOnPort(
 	server: Server,
 ): Promise<{ port: number; portSource: "env" | "remote-default" | "random" }> {
 	const result = getServerPort();
+	const hostname = getServerHostname();
 
-	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-		try {
+	try {
+		await new Promise<void>((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(result.port, hostname, () => {
+				server.removeListener("error", reject);
+				resolve();
+			});
+		});
+		const addr = server.address() as { port: number };
+		return { port: addr.port, portSource: result.portSource };
+	} catch (err: unknown) {
+		const isAddressInUse =
+			err instanceof Error &&
+			(err.message.includes("EADDRINUSE") || (err as NodeJS.ErrnoException).code === "EADDRINUSE");
+		if (!isAddressInUse) throw err;
+
+		// Fixed port busy (e.g. multi-session server already owns it) — fall back to random
+		if (result.port !== 0) {
 			await new Promise<void>((resolve, reject) => {
 				server.once("error", reject);
-				server.listen(
-					result.port,
-					getServerHostname(),
-					() => {
-						server.removeListener("error", reject);
-						resolve();
-					},
-				);
+				server.listen(0, hostname, () => {
+					server.removeListener("error", reject);
+					resolve();
+				});
 			});
 			const addr = server.address() as { port: number };
-			return { port: addr.port, portSource: result.portSource };
-		} catch (err: unknown) {
-			const isAddressInUse =
-				err instanceof Error && err.message.includes("EADDRINUSE");
-			if (isAddressInUse && attempt < MAX_RETRIES) {
-				await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-				continue;
-			}
-			if (isAddressInUse) {
-				const hint = isRemoteSession()
-					? " (set PLANNOTATOR_PORT to use a different port)"
-					: "";
-				throw new Error(
-					`Port ${result.port} in use after ${MAX_RETRIES} retries${hint}`,
-				);
-			}
-			throw err;
+			return { port: addr.port, portSource: "random" };
 		}
+		throw err;
 	}
-
-	// Unreachable, but satisfies TypeScript
-	throw new Error("Failed to bind port");
 }
 
 /**

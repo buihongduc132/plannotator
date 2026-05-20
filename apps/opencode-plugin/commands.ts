@@ -2,8 +2,8 @@
  * Command Handlers for OpenCode Plugin
  *
  * Handles /plannotator-review, /plannotator-annotate, /plannotator-last,
- * and /plannotator-archive slash commands. Extracted from the event hook
- * for modularity.
+ * /plannotator-last-message, and /plannotator-archive slash commands.
+ * Extracted from the event hook for modularity.
  */
 
 import {
@@ -417,6 +417,75 @@ export async function handleAnnotateLastCommand(
   }
 
   return result.feedback || null;
+}
+
+/**
+ * Handle /plannotator-last-message command.
+ * Opens the last assistant message in the plan review UI (approve/deny),
+ * unlike /plannotator-last which opens the annotation UI.
+ */
+export async function handleLastMessagePlanReviewCommand(
+  event: any,
+  deps: CommandDeps
+): Promise<{ approved: boolean; feedback?: string } | null> {
+  const { client, htmlContent, getSharingEnabled, getShareBaseUrl, getPasteApiUrl } = deps;
+
+  // @ts-ignore - Event properties contain sessionID
+  const sessionId = event.properties?.sessionID;
+  if (!sessionId) {
+    client.app.log({ level: "error", message: "No active session." });
+    return null;
+  }
+
+  const messagesResponse = await client.session.messages({
+    path: { id: sessionId },
+  });
+  const messages = messagesResponse.data;
+
+  let lastText: string | null = null;
+  if (messages) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.info.role === "assistant") {
+        const textParts = msg.parts
+          .filter((p: any) => p.type === "text" && p.text?.trim())
+          .map((p: any) => p.text);
+        if (textParts.length > 0) {
+          lastText = textParts.join("\n");
+          break;
+        }
+      }
+    }
+  }
+
+  if (!lastText) {
+    client.app.log({ level: "error", message: "No assistant message found in session." });
+    return null;
+  }
+
+  client.app.log({ level: "info", message: "Opening plan review UI for last message..." });
+
+  const server = await startPlannotatorServer({
+    plan: lastText,
+    origin: "opencode",
+    sharingEnabled: await getSharingEnabled(),
+    shareBaseUrl: getShareBaseUrl(),
+    pasteApiUrl: getPasteApiUrl(),
+    htmlContent,
+    onReady: (url, isRemote, port) => {
+      handleServerReady(url, isRemote, port);
+      if (isRemote) {
+        client.app.log({ level: "info", message: `[Plannotator] Open in browser: ${url}` });
+      }
+    },
+  });
+
+  const result = await server.waitForDecision();
+  await Bun.sleep(1500);
+  server.stop();
+
+  if (result.exit) return null;
+  return { approved: result.approved, feedback: result.feedback };
 }
 
 export async function handleArchiveCommand(

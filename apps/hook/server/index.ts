@@ -960,6 +960,100 @@ if (args[0] === "sessions") {
   emitAnnotateOutcome(result);
   process.exit(0);
 
+} else if (args[0] === "last-message") {
+  // ============================================
+  // PLAN REVIEW LAST MESSAGE MODE
+  // ============================================
+  // Same message resolution as annotate-last, but opens the plan review UI
+  // (approve/deny with feedback) instead of annotation.
+
+  const projectRoot = process.env.PLANNOTATOR_CWD || process.cwd();
+  const codexThreadId = process.env.CODEX_THREAD_ID;
+
+  let lastMessage: RenderedMessage | null = null;
+
+  if (codexThreadId) {
+    const rolloutPath = findCodexRolloutByThreadId(codexThreadId);
+    if (rolloutPath) {
+      const msg = getLastCodexMessage(rolloutPath, { beforeActiveTurn: true });
+      if (msg) {
+        lastMessage = { messageId: codexThreadId, text: msg.text, lineNumbers: [] };
+      }
+    }
+  } else {
+    function tryLogCandidates(getPaths: () => string[]): void {
+      if (lastMessage) return;
+      for (const logPath of getPaths()) {
+        lastMessage = getLastRenderedMessage(logPath);
+        if (lastMessage) return;
+      }
+    }
+
+    const ancestorLog = resolveSessionLogByAncestorPids();
+    tryLogCandidates(() => ancestorLog ? [ancestorLog] : []);
+
+    const cwdScanLog = resolveSessionLogByCwdScan({ cwd: projectRoot });
+    tryLogCandidates(() => cwdScanLog ? [cwdScanLog] : []);
+
+    tryLogCandidates(() => findSessionLogsForCwd(projectRoot));
+
+    tryLogCandidates(() => findSessionLogsByAncestorWalk(projectRoot));
+  }
+
+  if (!lastMessage) {
+    console.error("No rendered assistant message found in session logs.");
+    process.exit(1);
+  }
+
+  const planProject = (await detectProjectName()) ?? "_unknown";
+
+  const server = await startPlannotatorServer({
+    plan: lastMessage.text,
+    origin: detectedOrigin,
+    sharingEnabled,
+    shareBaseUrl,
+    pasteApiUrl,
+    htmlContent: planHtmlContent,
+    onReady: async (url, isRemote, port) => {
+      handleServerReady(url, isRemote, port);
+
+      if (isRemote && sharingEnabled) {
+        await writeRemoteShareLink(lastMessage!.text, shareBaseUrl, "review the plan", "message only").catch(() => {});
+      }
+    },
+  });
+
+  registerSession({
+    pid: process.pid,
+    port: server.port,
+    url: server.url,
+    mode: "plan",
+    project: planProject,
+    startedAt: new Date().toISOString(),
+    label: `plan-last-message`,
+  });
+
+  const result = await server.waitForDecision();
+
+  await Bun.sleep(1500);
+
+  server.stop();
+
+  if (result.approved) {
+    if (result.feedback?.trim()) {
+      console.log(result.feedback.trim());
+    }
+  } else {
+    if (result.feedback?.trim()) {
+      console.error(result.feedback.trim());
+    } else {
+      console.error("Plan review denied.");
+    }
+    process.exit(1);
+  }
+
+  process.exit(0);
+
 } else if (args[0] === "archive") {
   // ============================================
   // ARCHIVE BROWSER MODE

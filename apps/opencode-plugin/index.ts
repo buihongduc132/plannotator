@@ -52,6 +52,7 @@ import {
   handleReviewCommand,
   handleAnnotateCommand,
   handleAnnotateLastCommand,
+  handleLastMessagePlanReviewCommand,
   handleArchiveCommand,
   type CommandDeps,
 } from "./commands";
@@ -489,6 +490,7 @@ Do NOT proceed with implementation until your plan is approved.`);
       const cmd = input.command;
       if (
         cmd !== "plannotator-last" &&
+        cmd !== "plannotator-last-message" &&
         cmd !== "plannotator-annotate" &&
         cmd !== "plannotator-review" &&
         cmd !== "plannotator-archive"
@@ -521,6 +523,26 @@ Do NOT proceed with implementation until your plan is approved.`);
                 parts: [{
                   type: "text",
                   text: getAnnotateMessageFeedbackPrompt("opencode", undefined, { feedback }),
+                }],
+              },
+            });
+          } catch {
+            // Session may not be available
+          }
+        }
+        return;
+      }
+
+      if (cmd === "plannotator-last-message") {
+        const result = await handleLastMessagePlanReviewCommand(event, deps);
+        if (result && !result.approved && result.feedback) {
+          try {
+            await ctx.client.session.prompt({
+              path: { id: input.sessionID },
+              body: {
+                parts: [{
+                  type: "text",
+                  text: result.feedback,
                 }],
               },
             });

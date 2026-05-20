@@ -64,6 +64,7 @@ import {
 	openPlanReviewBrowser,
 	registerPlannotatorEventListeners,
 } from "./plannotator-events.js";
+import { handleLastMessagePlanReview } from "./last-message-plan-review.js";
 import {
 	getAssistantMessageText,
 	getLastAssistantMessageSnapshot,
@@ -715,6 +716,13 @@ export default function plannotator(pi: ExtensionAPI): void {
 					"error",
 				);
 			}
+		},
+	});
+
+	pi.registerCommand("plannotator-last-message", {
+		description: "Open the last assistant message in the plan review UI",
+		handler: async (_args, ctx) => {
+			await handleLastMessagePlanReview(pi, ctx);
 		},
 	});
 
