@@ -323,3 +323,7 @@ export function transformReviewFindings(
 
   return annotations;
 }
+
+// Re-export for test compatibility
+export { buildAgentReviewUserMessage as buildCodexReviewUserMessage } from "./agent-review-message";
+
