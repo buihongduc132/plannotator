@@ -11,6 +11,7 @@ import {
 	handleUploadRequest,
 } from "./handlers.js";
 import { html, json, parseBody, requestUrl, extractSessionSlug, injectSessionPath } from "./helpers.js";
+import { createPiAIRuntime, handlePiAIRequest } from "./ai-runtime.js";
 
 import { listenOnPort, buildServerUrl, getServerHostname } from "./network.js";
 
@@ -89,6 +90,7 @@ export async function startAnnotateServer(options: {
 	const repoInfo = getRepoInfo();
 
 	const externalAnnotations = createExternalAnnotationHandler("plan");
+	const aiRuntime = await createPiAIRuntime();
 
 	// Session info
 	const sessionId = options.sessionId;
@@ -120,6 +122,7 @@ export async function startAnnotateServer(options: {
 
 		// External annotations handler (after session routing so URL is rewritten)
 		if (await externalAnnotations.handle(req, res, url)) return;
+		if (url.pathname.startsWith("/api/ai/") && await handlePiAIRequest(req, res, url, aiRuntime)) return;
 
 		if (url.pathname === "/api/plan" && req.method === "GET") {
 			const response: Record<string, unknown> = {
@@ -236,6 +239,9 @@ export async function startAnnotateServer(options: {
 		portSource,
 		url: sessionUrl,
 		waitForDecision: () => decisionPromise,
-		stop: () => server.close(),
+		stop: () => {
+			aiRuntime?.dispose();
+			server.close();
+		},
 	};
 }

@@ -8,18 +8,18 @@
  * Runtime-agnostic: uses only node:fs, node:path, node:os, node:crypto.
  */
 
-import { homedir } from "os";
 import { join } from "path";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync } from "fs";
 import { createHash } from "crypto";
 import { sanitizeCwd, type SessionScope } from "./storage";
+import { getPlannotatorDataDir } from "./data-dir";
 
 /**
  * Get the drafts directory, creating it if needed.
  * When cwd + sessionId are provided, scopes to ~/.plannotator/drafts/<cwd_sanitized>/<sessionId>/
  */
 export function getDraftDir(scope?: SessionScope): string {
-  let dir = join(homedir(), ".plannotator", "drafts");
+  let dir = join(getPlannotatorDataDir(), "drafts");
   if (scope?.cwd && scope?.sessionId) {
     dir = join(dir, sanitizeCwd(scope.cwd), scope.sessionId);
   }

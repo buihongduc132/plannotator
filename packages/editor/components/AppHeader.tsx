@@ -1,12 +1,14 @@
 import React from 'react';
 import type { Origin } from '@plannotator/shared/agents';
 import type { Agent } from '@plannotator/ui/hooks/useAgents';
+import type { UpdateInfo } from '@plannotator/ui/hooks/useUpdateCheck';
 import { FeedbackButton, ApproveButton, ExitButton } from '@plannotator/ui/components/ToolbarButtons';
 import { ApproveDropdown } from '@plannotator/ui/components/ApproveDropdown';
 import { Settings } from '@plannotator/ui/components/Settings';
 import { PlanHeaderMenu } from '@plannotator/ui/components/PlanHeaderMenu';
 import type { CallbackConfig } from '@plannotator/ui/utils/callback';
 import type { UIPreferences } from '@plannotator/ui/utils/uiPreferences';
+import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 
 interface AppHeaderProps {
   // Mode flags (stable after mount)
@@ -25,6 +27,9 @@ interface AppHeaderProps {
   isSubmitting: boolean;
   isExiting: boolean;
   isPanelOpen: boolean;
+  aiAvailable: boolean;
+  isAIChatOpen: boolean;
+  aiHasMessages: boolean;
   hasAnyAnnotations: boolean;
   linkedDocIsActive: boolean;
   callbackShareUrlReady: boolean;
@@ -52,6 +57,7 @@ interface AppHeaderProps {
   onFeedback: () => void;
   onApprove: () => void;
   onAnnotationPanelToggle: () => void;
+  onAIChatToggle: () => void;
   onArchiveCopy: () => void;
   onArchiveDone: () => void;
   onTaterModeChange: (enabled: boolean) => void;
@@ -71,6 +77,8 @@ interface AppHeaderProps {
 
   // PlanHeaderMenu config
   appVersion: string;
+  updateInfo?: UpdateInfo | null;
+  isWSL?: boolean;
   agentInstructionsEnabled: boolean;
   obsidianConfigured: boolean;
   bearConfigured: boolean;
@@ -91,6 +99,9 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   isSubmitting,
   isExiting,
   isPanelOpen,
+  aiAvailable,
+  isAIChatOpen,
+  aiHasMessages,
   hasAnyAnnotations,
   linkedDocIsActive,
   callbackShareUrlReady,
@@ -112,6 +123,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   onFeedback,
   onApprove,
   onAnnotationPanelToggle,
+  onAIChatToggle,
   onArchiveCopy,
   onArchiveDone,
   onTaterModeChange,
@@ -129,6 +141,8 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   onSaveToBear,
   onSaveToOctarine,
   appVersion,
+  updateInfo,
+  isWSL,
   agentInstructionsEnabled,
   obsidianConfigured,
   bearConfigured,
@@ -278,6 +292,23 @@ export const AppHeader = React.memo<AppHeaderProps>(({
             </svg>
           </button>
         )}
+        {!goalSetupMode && aiAvailable && (
+          <button
+            onClick={onAIChatToggle}
+            className={`relative p-1.5 rounded-md text-xs font-medium transition-all ${
+              isAIChatOpen
+                ? 'bg-primary/15 text-primary'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+            }`}
+            title={isAIChatOpen ? 'Hide AI chat' : 'Show AI chat'}
+            aria-label={isAIChatOpen ? 'Hide AI chat' : 'Show AI chat'}
+          >
+            <SparklesIcon className="w-4 h-4" />
+            {aiHasMessages && !isAIChatOpen && (
+              <span className="absolute top-0 right-0 w-1.5 h-1.5 rounded-full bg-primary" />
+            )}
+          </button>
+        )}
 
         {/* Settings dialog (controlled, button hidden — opened from PlanHeaderMenu) */}
         <div className="hidden">
@@ -295,6 +326,9 @@ export const AppHeader = React.memo<AppHeaderProps>(({
 
         <PlanHeaderMenu
           appVersion={appVersion}
+          updateInfo={updateInfo}
+          origin={origin}
+          isWSL={isWSL}
           onOpenSettings={onOpenSettings}
           onOpenExport={onOpenExport}
           onCopyAgentInstructions={onCopyAgentInstructions}

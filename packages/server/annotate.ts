@@ -22,6 +22,8 @@ import { createExternalAnnotationHandler } from "./external-annotations";
 import { saveConfig, detectGitUser, getServerConfig } from "./config";
 import { dirname, resolve as resolvePath } from "path";
 import { isWSL } from "./browser";
+import { AI_QUERY_ENDPOINT, createAIRuntime } from "./ai-runtime";
+import type { AIEndpoints } from "@plannotator/ai";
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
@@ -137,6 +139,7 @@ export async function startAnnotateServer(
       : renderHtml && rawHtml ? rawHtml : markdown;
   const draftKey = contentHash(draftSource);
   const externalAnnotations = createExternalAnnotationHandler("plan");
+  const aiRuntime = await createAIRuntime();
 
   // Detect repo info (cached for this session)
   const repoInfo = await getRepoInfo();
@@ -269,6 +272,17 @@ export async function startAnnotateServer(
           });
           if (externalResponse) return externalResponse;
 
+          if (url.pathname.startsWith("/api/ai/")) {
+            const handler = aiRuntime.endpoints[url.pathname as keyof AIEndpoints];
+            if (handler) {
+              if (url.pathname === AI_QUERY_ENDPOINT) {
+                server.timeout(req, 0);
+              }
+              return handler(req);
+            }
+            return Response.json({ error: "Not found" }, { status: 404 });
+          }
+
           // API: Exit annotation session without feedback
           if (url.pathname === "/api/exit" && req.method === "POST") {
             deleteDraft(draftKey);
@@ -376,6 +390,9 @@ export async function startAnnotateServer(
     url: serverUrl,
     isRemote,
     waitForDecision: () => decisionPromise,
-    stop: () => server.stop(),
+    stop: () => {
+      aiRuntime.dispose();
+      server.stop();
+    },
   };
 }

@@ -6,7 +6,7 @@ import { ConfirmDialog } from '@plannotator/ui/components/ConfirmDialog';
 import { Settings } from '@plannotator/ui/components/Settings';
 import { FeedbackButton, ApproveButton, ExitButton } from '@plannotator/ui/components/ToolbarButtons';
 import { AgentReviewActions } from './components/AgentReviewActions';
-import { UpdateBanner } from '@plannotator/ui/components/UpdateBanner';
+import { useUpdateCheck } from '@plannotator/ui/hooks/useUpdateCheck';
 import { storage } from '@plannotator/ui/utils/storage';
 import { CompletionOverlay } from '@plannotator/ui/components/CompletionOverlay';
 import { GitHubIcon } from '@plannotator/ui/components/GitHubIcon';
@@ -17,9 +17,12 @@ import { getPlatformLabel, getMRLabel, getMRNumberLabel, getDisplayRepo } from '
 import { configStore, useConfigValue } from '@plannotator/ui/config';
 import { loadDiffFont } from '@plannotator/ui/utils/diffFonts';
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
-import { getAIProviderSettings, saveAIProviderSettings, getPreferredModel } from '@plannotator/ui/utils/aiProvider';
-import { AISetupDialog } from '@plannotator/ui/components/AISetupDialog';
-import { needsAISetup } from '@plannotator/ui/utils/aiSetup';
+import {
+  getAIProviderSettings,
+  resolveAIModelForProvider,
+  resolveAIProviderSelection,
+  saveAIProviderSelection,
+} from '@plannotator/ui/utils/aiProvider';
 import { DiffTypeSetupDialog } from '@plannotator/ui/components/DiffTypeSetupDialog';
 import { needsDiffTypeSetup } from '@plannotator/ui/utils/diffTypeSetup';
 import { CodeAnnotation, CodeAnnotationType, SelectedLineRange, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration } from '@plannotator/ui/types';
@@ -41,7 +44,7 @@ import { DockviewReact, type DockviewReadyEvent, type DockviewApi } from 'dockvi
 import { ReviewHeaderMenu } from './components/ReviewHeaderMenu';
 import { ReviewSidebar } from './components/ReviewSidebar';
 import type { ReviewSidebarTab } from './components/ReviewSidebar';
-import { SparklesIcon } from './components/SparklesIcon';
+import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import { ReviewAgentsIcon } from '@plannotator/ui/components/ReviewAgentsIcon';
 import { useSidebar } from '@plannotator/ui/hooks/useSidebar';
 import { FileTree } from './components/FileTree';
@@ -253,6 +256,22 @@ const ReviewApp: React.FC = () => {
   const mrNumberLabel = prMetadata ? getMRNumberLabel(prMetadata) : '';
   const displayRepo = prMetadata ? getDisplayRepo(prMetadata) : '';
   const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0';
+  const updateInfo = useUpdateCheck();
+  const updateToastShown = useRef(false);
+  useEffect(() => {
+    if (updateInfo?.updateAvailable && !updateInfo.dismissed && !updateToastShown.current) {
+      updateToastShown.current = true;
+      const t = setTimeout(() => {
+        toast('A new version of Plannotator is available', {
+          description: 'Open the Options menu to update.',
+          duration: 4000,
+          position: 'top-right',
+          classNames: { toast: '!w-auto', description: '!text-foreground/70' },
+        });
+      }, 1500);
+      return () => clearTimeout(t);
+    }
+  }, [updateInfo?.updateAvailable, updateInfo?.dismissed]);
 
   const identity = useConfigValue('displayName');
 
@@ -405,6 +424,7 @@ const ReviewApp: React.FC = () => {
   // AI Chat
   const [aiAvailable, setAiAvailable] = useState(false);
   const [aiProviders, setAiProviders] = useState<Array<{ id: string; name: string; capabilities: Record<string, boolean>; models?: Array<{ id: string; label: string; default?: boolean }> }>>([]);
+  const [aiDefaultProvider, setAiDefaultProvider] = useState<string | null>(null);
   const [aiConfig, setAiConfig] = useState(() => {
     const saved = getAIProviderSettings();
     const pid = saved.providerId;
@@ -414,8 +434,6 @@ const ReviewApp: React.FC = () => {
       reasoningEffort: null as string | null,
     };
   });
-  const [showAISetup, setShowAISetup] = useState(false);
-  const [aiCheckComplete, setAiCheckComplete] = useState(false);
   const [showDiffTypeSetup, setShowDiffTypeSetup] = useState(false);
   const [diffTypeSetupPending, setDiffTypeSetupPending] = useState(false);
   const aiChat = useAIChat({
@@ -424,6 +442,16 @@ const ReviewApp: React.FC = () => {
     model: aiConfig.model,
     reasoningEffort: aiConfig.reasoningEffort,
   });
+  const {
+    messages: aiMessages,
+    isCreatingSession: aiIsCreatingSession,
+    isStreaming: aiIsStreaming,
+    permissionRequests: aiPermissionRequests,
+    respondToPermission: respondToAIPermission,
+    ask: askAI,
+    resetSession: resetAISession,
+    sessionId: aiSessionId,
+  } = aiChat;
 
   const codeNav = useCodeNav();
 
@@ -464,26 +492,49 @@ const ReviewApp: React.FC = () => {
           setAiAvailable(true);
           const providers = data.providers ?? [];
           setAiProviders(providers);
+          setAiDefaultProvider(data.defaultProvider ?? null);
         }
-        setAiCheckComplete(true);
       })
-      .catch(() => { setAiCheckComplete(true); });
+      .catch(() => {});
   }, []);
 
-  const handleAIConfigChange = useCallback((config: { providerId?: string | null; model?: string | null }) => {
+  useEffect(() => {
+    if (!aiAvailable || aiProviders.length === 0) return;
     setAiConfig(prev => {
-      const next = { ...prev, ...config };
-      // If provider changed, load that provider's preferred model
-      if (config.providerId !== undefined && config.providerId !== prev.providerId) {
-        next.model = config.providerId ? getPreferredModel(config.providerId) : null;
-      }
-      // Persist provider selection
       const saved = getAIProviderSettings();
-      saveAIProviderSettings({ ...saved, providerId: next.providerId });
+      const selection = resolveAIProviderSelection({
+        providers: aiProviders,
+        origin,
+        settings: saved,
+        serverDefaultProvider: aiDefaultProvider,
+      });
+
+      if (prev.providerId === selection.providerId && prev.model === selection.model) return prev;
+
+      return { ...prev, providerId: selection.providerId, model: selection.model };
+    });
+  }, [aiAvailable, aiProviders, aiDefaultProvider, origin]);
+
+  const handleAIConfigChange = useCallback((config: { providerId?: string | null; model?: string | null; reasoningEffort?: string | null }) => {
+    setAiConfig(prev => {
+      const saved = getAIProviderSettings();
+      const providerId = config.providerId !== undefined ? config.providerId : prev.providerId;
+      const providerChanged = config.providerId !== undefined && config.providerId !== prev.providerId;
+      const provider = aiProviders.find(p => p.id === providerId) ?? null;
+      const model = providerChanged
+        ? (config.model !== undefined ? config.model : resolveAIModelForProvider(provider, saved.preferredModels))
+        : (config.model !== undefined ? config.model : prev.model);
+      const next = { ...prev, ...config, providerId, model };
+      saveAIProviderSelection({
+        providerId: next.providerId,
+        model: next.model,
+        origin,
+        settings: saved,
+      });
       return next;
     });
-    aiChat.resetSession();
-  }, [aiChat]);
+    resetAISession();
+  }, [aiProviders, origin, resetAISession]);
 
   const handleAskAI = useCallback((question: string) => {
     if (!pendingSelection || !files[activeFileIndex]) return;
@@ -492,7 +543,7 @@ const ReviewApp: React.FC = () => {
     const side = pendingSelection.side === 'additions' ? 'new' : 'old';
     const selectedCode = extractLinesFromPatch(files[activeFileIndex].patch, lineStart, lineEnd, side);
 
-    aiChat.ask({
+    askAI({
       prompt: question,
       filePath: files[activeFileIndex].path,
       lineStart,
@@ -500,7 +551,7 @@ const ReviewApp: React.FC = () => {
       side,
       selectedCode: selectedCode || undefined,
     });
-  }, [pendingSelection, files, activeFileIndex, aiChat]);
+  }, [activeFileIndex, askAI, files, pendingSelection]);
 
   const handleViewAIResponse = useCallback((questionId?: string) => {
     reviewSidebar.open('ai');
@@ -528,13 +579,13 @@ const ReviewApp: React.FC = () => {
     const selStart = Math.min(pendingSelection.start, pendingSelection.end);
     const selEnd = Math.max(pendingSelection.start, pendingSelection.end);
     const side = pendingSelection.side === 'additions' ? 'new' : 'old';
-    return aiChat.messages.filter(m => {
+    return aiMessages.filter(m => {
       const q = m.question;
       return q.filePath === filePath && q.side === side &&
         q.lineStart != null && q.lineEnd != null &&
         q.lineStart <= selEnd && q.lineEnd >= selStart;
     });
-  }, [pendingSelection, files, activeFileIndex, aiChat.messages]);
+  }, [pendingSelection, files, activeFileIndex, aiMessages]);
 
   // Click AI marker in diff → scroll sidebar to that Q&A
   const [scrollToQuestionId, setScrollToQuestionId] = useState<string | null>(null);
@@ -547,8 +598,8 @@ const ReviewApp: React.FC = () => {
 
   // General AI question from sidebar input
   const handleAskGeneral = useCallback((question: string) => {
-    aiChat.ask({ prompt: question });
-  }, [aiChat.ask]);
+    askAI({ prompt: question });
+  }, [askAI]);
 
   // Resizable panels
   const panelResize = useResizablePanel({ storageKey: 'plannotator-review-panel-width' });
@@ -834,13 +885,13 @@ const ReviewApp: React.FC = () => {
       .finally(() => setIsLoading(false));
   }, []);
 
-  // Show diff type setup dialog only after AI setup dialog is dismissed (avoid stacking)
+  // Show diff type setup after the initial diff payload marks it pending.
   useEffect(() => {
-    if (diffTypeSetupPending && aiCheckComplete && !showAISetup) {
+    if (diffTypeSetupPending) {
       setDiffTypeSetupPending(false);
       setShowDiffTypeSetup(true);
     }
-  }, [diffTypeSetupPending, aiCheckComplete, showAISetup]);
+  }, [diffTypeSetupPending]);
 
   const handleDiffStyleChange = useCallback((style: 'split' | 'unified') => {
     configStore.set('diffStyle', style);
@@ -1390,9 +1441,9 @@ const ReviewApp: React.FC = () => {
     activeSearchMatchId,
     activeSearchMatch: activeSearchMatch?.filePath === files[activeFileIndex]?.path ? activeSearchMatch : null,
     aiAvailable,
-    aiMessages: aiChat.messages,
+    aiMessages,
     onAskAI: handleAskAI,
-    isAILoading: aiChat.isCreatingSession || aiChat.isStreaming,
+    isAILoading: aiIsCreatingSession || aiIsStreaming,
     onViewAIResponse: handleViewAIResponse,
     onClickAIMarker: handleClickAIMarker,
     aiHistoryForSelection,
@@ -1422,7 +1473,7 @@ const ReviewApp: React.FC = () => {
     handleToggleViewed, stagedFiles, stagingFile, stageFile,
     canStageFiles, stageError, isSearchPending, debouncedSearchQuery,
     activeFileSearchMatches, activeSearchMatchId, activeSearchMatch,
-    aiAvailable, aiChat.messages, aiChat.isCreatingSession, aiChat.isStreaming,
+    aiAvailable, aiMessages, aiIsCreatingSession, aiIsStreaming,
     handleAskAI, handleViewAIResponse, handleClickAIMarker,
     aiHistoryForSelection, agentJobs.jobs, prMetadata, prContext,
     isPRContextLoading, prContextError, fetchPRContext, platformUser, openDiffFile,
@@ -2044,6 +2095,9 @@ const ReviewApp: React.FC = () => {
               isFileTreeOpen={isFileTreeOpen}
               isSidebarOpen={reviewSidebar.isOpen}
               appVersion={appVersion}
+              updateInfo={updateInfo}
+              origin={origin}
+              isWSL={isWSL}
             />
 
             <div className="w-px h-5 bg-border/50 mx-1 hidden md:block" />
@@ -2078,7 +2132,7 @@ const ReviewApp: React.FC = () => {
                 title="AI Chat"
               >
                 <SparklesIcon className="w-4 h-4" />
-                {aiChat.messages.length > 0 && !(reviewSidebar.isOpen && reviewSidebar.activeTab === 'ai') && (
+                {aiMessages.length > 0 && !(reviewSidebar.isOpen && reviewSidebar.activeTab === 'ai') && (
                   <span className="absolute top-0 right-0 w-1.5 h-1.5 rounded-full bg-primary" />
                 )}
               </button>
@@ -2254,19 +2308,19 @@ const ReviewApp: React.FC = () => {
                 onDeleteEditorAnnotation={deleteEditorAnnotation}
                 prMetadata={prMetadata}
                 aiAvailable={aiAvailable}
-                aiMessages={aiChat.messages}
-                isAICreatingSession={aiChat.isCreatingSession}
-                isAIStreaming={aiChat.isStreaming}
+                aiMessages={aiMessages}
+                isAICreatingSession={aiIsCreatingSession}
+                isAIStreaming={aiIsStreaming}
                 onScrollToAILines={handleScrollToAILines}
                 activeFilePath={files[activeFileIndex]?.path}
                 scrollToQuestionId={scrollToQuestionId}
                 onAskGeneral={handleAskGeneral}
-                aiPermissionRequests={aiChat.permissionRequests}
-                onRespondToPermission={aiChat.respondToPermission}
+                aiPermissionRequests={aiPermissionRequests}
+                onRespondToPermission={respondToAIPermission}
                 aiProviders={aiProviders}
                 aiConfig={aiConfig}
                 onAIConfigChange={handleAIConfigChange}
-                hasAISession={!!aiChat.sessionId}
+                hasAISession={!!aiSessionId}
                 agentJobs={agentJobs.jobs}
                 agentCapabilities={agentJobs.capabilities}
                 onAgentLaunch={agentJobs.launchJob}
@@ -2400,16 +2454,6 @@ const ReviewApp: React.FC = () => {
           showCancel
         />
 
-        {/* AI setup dialog — first-run only */}
-        <AISetupDialog
-          isOpen={showAISetup}
-          providers={aiProviders}
-          onComplete={(providerId) => {
-            setShowAISetup(false);
-            handleAIConfigChange({ providerId });
-          }}
-        />
-
         {/* Diff type setup dialog — first-run only */}
         {showDiffTypeSetup && (
           <DiffTypeSetupDialog
@@ -2441,9 +2485,6 @@ const ReviewApp: React.FC = () => {
           }
           agentLabel={getAgentName(origin)}
         />
-
-        {/* Update notification */}
-        <UpdateBanner origin={origin} isWSL={isWSL} />
 
         {/* GitHub general comment dialog */}
         <ReviewSubmissionDialog

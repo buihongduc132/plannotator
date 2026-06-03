@@ -1,6 +1,6 @@
 ---
 title: "Installation"
-description: "How to install Plannotator for Claude Code, Codex, OpenCode, Pi, and other agent hosts."
+description: "How to install Plannotator for Claude Code, Codex, OpenCode, Kiro CLI, Pi, Amp, Droid, and other agent hosts."
 sidebar:
   order: 1
 section: "Getting Started"
@@ -116,6 +116,32 @@ curl -fsSL https://plannotator.ai/install.sh | bash
 
 This also clears any cached plugin versions.
 
+## Kiro CLI
+
+Kiro is auto-detected — no extra flag or step. If `~/.kiro` exists (or `kiro-cli` is on your PATH) when you run the installer, Plannotator's Kiro skills install automatically, the same way Codex and Gemini are handled. This works on every platform; use the installer for your OS:
+
+**macOS / Linux / WSL:**
+
+```bash
+curl -fsSL https://plannotator.ai/install.sh | bash
+```
+
+**Windows PowerShell:**
+
+```powershell
+irm https://plannotator.ai/install.ps1 | iex
+```
+
+**Windows CMD:**
+
+```cmd
+curl -fsSL https://plannotator.ai/install.cmd -o install.cmd && install.cmd && del install.cmd
+```
+
+On Windows the installer checks for `%USERPROFILE%\.kiro` (or `kiro-cli` on your PATH). This installs the Kiro skills to `~/.kiro/skills` and the Plannotator agent to `~/.kiro/agents/plannotator.json` (an existing agent file is never overwritten). If you install Kiro *after* Plannotator, just re-run the installer.
+
+See the [Kiro guide](/docs/guides/kiro-cli/) for the skill list and the Plannotator agent.
+
 ## Kilo Code
 
 Coming soon.
@@ -193,3 +219,66 @@ pi -e npm:@plannotator/pi-extension
 Start plan mode with `pi --plan`, or toggle mid-session with `/plannotator` or `Ctrl+Alt+P`. The extension provides file-based plan review, code review (`/plannotator-review`), markdown annotation (`/plannotator-annotate`), bash safety gating during planning, and progress tracking during execution.
 
 See [Plannotator Meets Pi](/blog/plannotator-meets-pi) for the full walkthrough.
+
+## Amp
+
+Plannotator's Amp integration is currently commands-only. It adds command-palette actions for code review, file annotation, and annotating Amp's latest assistant message.
+
+Install the CLI first:
+
+```bash
+curl -fsSL https://plannotator.ai/install.sh | bash
+```
+
+Then install the Amp plugin:
+
+```bash
+mkdir -p ~/.config/amp/plugins
+curl -fsSL https://raw.githubusercontent.com/backnotprop/plannotator/main/apps/amp-plugin/plannotator.ts \
+  -o ~/.config/amp/plugins/plannotator.ts
+```
+
+Restart Amp or run `plugins: reload` from the command palette.
+
+This adds:
+
+```text
+Plannotator: Review changes
+Plannotator: Review changes or PR
+Plannotator: Annotate file
+Plannotator: Annotate last answer
+```
+
+For `Plannotator: Review changes or PR`, leave the input blank to review local changes, or enter a PR/MR URL.
+
+The plugin uses Amp's thread API for `Annotate last answer`, so it does not read transcript logs.
+
+## Droid
+
+Plannotator's Droid integration is currently commands-only. It does not intercept Droid's planning flow yet.
+
+Install the CLI first:
+
+```bash
+curl -fsSL https://plannotator.ai/install.sh | bash
+```
+
+Then install the Droid plugin:
+
+```bash
+droid plugin marketplace add https://github.com/backnotprop/plannotator
+droid plugin install plannotator@plannotator
+```
+
+Open a fresh Droid session after installing.
+
+This adds the following slash commands:
+
+```text
+/plannotator-review
+/plannotator-annotate <file|folder|url>
+/plannotator-last
+/plannotator-archive
+```
+
+Those commands open the browser-based Plannotator review UI and send the result back into the Droid session.

@@ -80,6 +80,29 @@ describe("install.sh", () => {
     expect(script).toContain('Skipping skills install (git not found)');
   });
 
+  test("auto-installs Kiro skills when ~/.kiro is detected (no flag)", () => {
+    // Auto-detected like Codex/Gemini — never gated behind a bespoke flag.
+    expect(script).toContain("kiro_available=0");
+    expect(script).toContain('[ -d "$HOME/.kiro" ]');
+    expect(script).toContain("KIRO_SKILLS_DIR");
+    expect(script).toContain("$HOME/.kiro/skills");
+    expect(script).toContain('if [ "$kiro_available" -eq 1 ]');
+    // Kiro-specific skills (origin baked in) come from apps/kiro-cli/skills.
+    expect(script).toContain('copy_skill_if_present apps/kiro-cli/skills/plannotator-review "$KIRO_SKILLS_DIR"');
+    expect(script).toContain('copy_skill_if_present apps/kiro-cli/skills/plannotator-annotate "$KIRO_SKILLS_DIR"');
+    expect(script).toContain('copy_skill_if_present apps/kiro-cli/skills/plannotator-archive "$KIRO_SKILLS_DIR"');
+    // Shared skills come from apps/skills (not duplicated into apps/kiro-cli/skills).
+    expect(script).toContain('copy_skill_if_present apps/skills/plannotator-setup-goal "$KIRO_SKILLS_DIR"');
+    expect(script).toContain('copy_skill_if_present apps/skills/plannotator-visual-explainer "$KIRO_SKILLS_DIR"');
+    // sparse-checkout fetches apps/kiro-cli (skills + agent example).
+    expect(script).toContain("git sparse-checkout set apps/skills apps/kiro-cli");
+    // The installer also writes the example custom agent to ~/.kiro/agents.
+    expect(script).toContain('cp apps/kiro-cli/agents/plannotator.json "$HOME/.kiro/agents/plannotator.json"');
+    // Parity: no bespoke flag, like every other agent.
+    expect(script).not.toContain("--kiro");
+    expect(script).not.toContain("INSTALL_KIRO");
+  });
+
   test("cleans only legacy command-overlap agent skills", () => {
     expect(script).toContain("LEGACY_AGENTS_SKILLS_DIR");
     expect(script).toContain("plannotator-review plannotator-annotate plannotator-last");
@@ -397,7 +420,10 @@ describe("install.cmd", () => {
     // Layer 3: config file read (verifyAttestation appears inside a
     // findstr pattern with escaped quotes; assert the key + findstr
     // separately rather than the quoted form)
-    expect(script).toContain("%USERPROFILE%\\.plannotator\\config.json");
+    expect(script).toContain("PLANNOTATOR_DATA_DIR");
+    expect(script).toContain('if /i "!_CONFIG_DIR!"=="~" set "_CONFIG_DIR=%USERPROFILE%"');
+    expect(script).toContain('if "!_CONFIG_DIR:~0,2!"=="~\\" set "_CONFIG_DIR=%USERPROFILE%\\!_CONFIG_DIR:~2!"');
+    expect(script).toContain('if "!_CONFIG_DIR:~0,2!"=="~/" set "_CONFIG_DIR=%USERPROFILE%\\!_CONFIG_DIR:~2!"');
     expect(script).toContain("verifyAttestation");
     expect(script).toContain("findstr");
     // Layer 2: env var
@@ -424,8 +450,9 @@ describe("install shared behavior", () => {
   const ps = readFileSync(join(scriptsDir, "install.ps1"), "utf-8");
 
   test("install.sh has three-layer opt-in resolution", () => {
-    // Layer 3: config file via grep against the flat JSON boolean
-    expect(sh).toContain("$HOME/.plannotator/config.json");
+    // Layer 3: config file via grep, respecting PLANNOTATOR_DATA_DIR
+    expect(sh).toContain("PLANNOTATOR_DATA_DIR");
+    expect(sh).toContain("_config_dir");
     expect(sh).toContain('"verifyAttestation"');
     // Layer 2: env var parsing
     expect(sh).toContain("PLANNOTATOR_VERIFY_ATTESTATION");
@@ -438,8 +465,13 @@ describe("install shared behavior", () => {
   });
 
   test("install.ps1 has three-layer opt-in resolution", () => {
-    // Layer 3: config file via ConvertFrom-Json
-    expect(ps).toContain("$env:USERPROFILE\\.plannotator\\config.json");
+    // Layer 3: config file via ConvertFrom-Json, respecting PLANNOTATOR_DATA_DIR
+    expect(ps).toContain("PLANNOTATOR_DATA_DIR");
+    expect(ps).toContain('$configDir -eq "~"');
+    expect(ps).toContain('$configDir.StartsWith("~/")');
+    expect(ps).toContain("$configDir.StartsWith('~\\')");
+    expect(ps).toContain("Join-Path $env:USERPROFILE ($configDir.Substring(2))");
+    expect(ps).toContain('Join-Path $configDir "config.json"');
     expect(ps).toContain("ConvertFrom-Json");
     expect(ps).toContain("$cfg.verifyAttestation");
     // Layer 2: env var

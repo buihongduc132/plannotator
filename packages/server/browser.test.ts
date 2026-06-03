@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { isNoOpBrowserSentinel, shouldTryRemoteBrowserFallback } from "./browser";
 
 const ENV_KEYS = ["PLANNOTATOR_BROWSER", "BROWSER"];
 
@@ -66,5 +67,36 @@ describe("browser", () => {
       const result = await isWSL();
       expect(typeof result).toBe("boolean");
     });
+  });
+
+  test("true for remote sessions when BROWSER is a no-op sentinel (e.g. agent view)", () => {
+    clearEnv();
+    process.env.BROWSER = "true";
+    expect(shouldTryRemoteBrowserFallback(true)).toBe(true);
+  });
+
+  test("true for remote sessions when PLANNOTATOR_BROWSER is a no-op sentinel", () => {
+    clearEnv();
+    process.env.PLANNOTATOR_BROWSER = "none";
+    expect(shouldTryRemoteBrowserFallback(true)).toBe(true);
+  });
+});
+
+describe("isNoOpBrowserSentinel", () => {
+  test("returns false for undefined / empty", () => {
+    expect(isNoOpBrowserSentinel(undefined)).toBe(false);
+    expect(isNoOpBrowserSentinel("")).toBe(false);
+  });
+
+  test("recognises the documented no-op values, case- and whitespace-insensitive", () => {
+    for (const v of ["true", "false", "none", ":", "0", "1", "TRUE", "  none  "]) {
+      expect(isNoOpBrowserSentinel(v)).toBe(true);
+    }
+  });
+
+  test("does not flag real browser handlers", () => {
+    expect(isNoOpBrowserSentinel("/usr/bin/firefox")).toBe(false);
+    expect(isNoOpBrowserSentinel("Google Chrome")).toBe(false);
+    expect(isNoOpBrowserSentinel("open")).toBe(false);
   });
 });
