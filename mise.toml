@@ -1,0 +1,43 @@
+[tasks.opencode-dev]
+description = "Build opencode-plugin and symlink into OpenCode's node_modules for local dev"
+run = '''
+  set -e
+
+  PLUGIN_DIR="$(pwd)/apps/opencode-plugin"
+  # Resolve OPENCODE_ROOT from OPENCODE_CONFIG_DIR if set, otherwise fall back to ~/.opencode
+  if [ -n "${OPENCODE_CONFIG_DIR:-}" ]; then
+    OPENCODE_ROOT="${OPENCODE_CONFIG_DIR}"
+  else
+    OPENCODE_ROOT="${HOME}/.opencode"
+  fi
+
+  echo "=== [opencode-dev] OpenCode root: $OPENCODE_ROOT ==="
+
+  echo "=== [opencode-dev] Building plugin ==="
+  bun run --cwd "$PLUGIN_DIR" build
+
+  echo "=== [opencode-dev] Symlinking into OpenCode's node_modules ==="
+  for TARGET_DIR in "$OPENCODE_ROOT/node_modules" "$(pwd)/node_modules"; do
+    mkdir -p "$TARGET_DIR/@plannotator"
+    if [ -L "$TARGET_DIR/@plannotator/opencode" ]; then
+      rm "$TARGET_DIR/@plannotator/opencode"
+      echo "Removed stale symlink in $TARGET_DIR"
+    fi
+    ln -s "$PLUGIN_DIR" "$TARGET_DIR/@plannotator/opencode"
+    echo "Symlinked: $TARGET_DIR/@plannotator/opencode -> $PLUGIN_DIR"
+  done
+
+  # Verify the symlinks are correct
+  for TARGET_DIR in "$OPENCODE_ROOT/node_modules" "$(pwd)/node_modules"; do
+    TARGET="$(readlink "$TARGET_DIR/@plannotator/opencode")"
+    echo "Verified: $TARGET_DIR -> $TARGET"
+  done
+
+  echo "=== [opencode-dev] Done — restart OpenCode to pick up changes ==="
+'''
+
+[tasks.opencode-dev.env]
+PLANNOTATOR_REMOTE = "1"
+PLANNOTATOR_PORT = "19437"
+PLANNOTATOR_SERVER_URL = "http://100.114.135.99:19432"
+PLANNOTATOR_CLIENT_MODE = "1"
